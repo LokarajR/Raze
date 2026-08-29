@@ -6,3 +6,4 @@ demo-run.txt
 audit-report.json
 fix.txt
 *.raze-backup
+.public-merchants/

@@ -147,7 +147,8 @@ function create(opts) {
   async function processOne() {
     return withTransaction(pool, async (tx) => {
       const picked = await tx.query(
-        `SELECT event_id, event_type, raw_body, subject_id, process_attempts
+        `SELECT event_id, event_type, raw_body, subject_id, process_attempts,
+                headers, signature, source
            FROM raze_inbox
           WHERE processed_at IS NULL
             AND (next_attempt_at IS NULL OR next_attempt_at <= now())
@@ -185,7 +186,20 @@ function create(opts) {
 
       try {
         if (handler) {
-          await handler(event, tx);
+          // Third argument carries the delivery as it arrived. A merchant
+          // handler being adapted rather than rewritten often reads the raw
+          // body or the signature header itself, and giving it an empty
+          // headers object makes it take a rejection path for the wrong
+          // reason.
+          await handler(event, tx, {
+            eventId: row.event_id,
+            eventType: row.event_type,
+            headers: row.headers || {},
+            signature: row.signature,
+            rawBody: row.raw_body,
+            source: row.source,
+            attempt: row.process_attempts + 1,
+          });
           resolution = 'applied';
         }
 

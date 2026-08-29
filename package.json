@@ -6,7 +6,8 @@
     "gate": "node gate/reconcile-gate.js",
     "demo": "node bin/raze demo --sever-delivery",
     "test": "node test/run-all.js",
-    "test:offline": "node test/run-all.js --offline"
+    "test:offline": "node test/run-all.js --offline",
+    "demo:public": "node examples/public-merchant/lost-payment.js"
   },
   "keywords": [],
   "author": "",
@@ -14,10 +15,22 @@
   "description": "Keeps merchant business state correct when Razorpay webhook delivery is duplicated, delayed, rejected, or absent.",
   "dependencies": {
     "embedded-postgres": "^18.4.0-beta.17",
-    "express": "^5.2.1",
     "pg": "^8.23.0"
   },
   "bin": {
     "raze": "./bin/raze"
+  },
+  "devDependencies": {
+    "body-parser": "^2.3.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "joi": "^18.2.5",
+    "joi-objectid": "^4.0.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb-memory-server": "^11.2.0",
+    "mongoose": "^9.9.4",
+    "nodemon": "^3.1.14",
+    "razorpay": "^2.9.8"
   }
 }
