@@ -5,8 +5,8 @@
   "scripts": {
     "gate": "node gate/reconcile-gate.js",
     "demo": "node bin/raze demo --sever-delivery",
-    "test": "node test/layer1.test.js && node test/layer2.test.js && node test/layer3.test.js && node test/layer4.test.js",
-    "test:offline": "node test/layer1.test.js && node test/layer4.test.js"
+    "test": "node test/run-all.js",
+    "test:offline": "node test/run-all.js --offline"
   },
   "keywords": [],
   "author": "",

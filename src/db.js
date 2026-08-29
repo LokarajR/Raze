@@ -24,19 +24,47 @@ const EMBEDDED_PORT = Number(process.env.RAZE_PG_PORT || 55432);
 
 let embedded = null;
 
-async function startEmbedded() {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Start the embedded server, retrying on a startup race.
+ *
+ * Consecutive processes using the same data directory — the four test files run
+ * back to back, for instance — can collide: the previous postmaster has exited
+ * but has not yet released its shared memory block, and the new one dies with
+ * "pre-existing shared memory block is still in use". That is transient, so it is
+ * worth retrying rather than failing a whole suite on it.
+ */
+async function startEmbedded({ attempts = 4 } = {}) {
   const mod = require('embedded-postgres');
   const EmbeddedPostgres = mod.default || mod;
-  embedded = new EmbeddedPostgres({
-    databaseDir: PGDATA,
-    user: 'raze',
-    password: 'raze',
-    port: EMBEDDED_PORT,
-    persistent: true,
-  });
-  if (!fs.existsSync(PGDATA)) await embedded.initialise();
-  await embedded.start();
-  return `postgres://raze:raze@127.0.0.1:${EMBEDDED_PORT}/postgres`;
+
+  let lastErr = null;
+  for (let i = 1; i <= attempts; i++) {
+    embedded = new EmbeddedPostgres({
+      databaseDir: PGDATA,
+      user: 'raze',
+      password: 'raze',
+      port: EMBEDDED_PORT,
+      persistent: true,
+    });
+    try {
+      if (!fs.existsSync(PGDATA)) await embedded.initialise();
+      await embedded.start();
+      return `postgres://raze:raze@127.0.0.1:${EMBEDDED_PORT}/postgres`;
+    } catch (err) {
+      lastErr = err;
+      embedded = null;
+      // A stale lock file from a killed process blocks every subsequent start.
+      try { fs.unlinkSync(path.join(PGDATA, 'postmaster.pid')); } catch {}
+      if (i < attempts) await sleep(1500 * i);
+    }
+  }
+  throw new Error(
+    `embedded postgres failed to start after ${attempts} attempts: ${lastErr && lastErr.message}
+` +
+    'If another raze process is running, stop it — or set DATABASE_URL to use your own postgres.'
+  );
 }
 
 async function connect() {
@@ -58,7 +86,12 @@ async function migrate(pool) {
 
 async function shutdown(pool) {
   if (pool) await pool.end().catch(() => {});
-  if (embedded) await embedded.stop().catch(() => {});
+  if (embedded) {
+    await embedded.stop().catch(() => {});
+    // Give the postmaster time to release its shared memory block before the
+    // next process in the same suite tries to bind the same data directory.
+    await sleep(700);
+  }
   embedded = null;
 }
 
