@@ -1,0 +1,21 @@
+app = "raze"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  MODE = "protected"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # a stopped machine looks identical to a broken webhook
+  min_machines_running = 1
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  method = "GET"
+  path = "/health"

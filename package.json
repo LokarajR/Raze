@@ -1,0 +1,23 @@
+{
+  "name": "raze",
+  "version": "0.1.0",
+  "main": "src/runtime/index.js",
+  "scripts": {
+    "gate": "node gate/reconcile-gate.js",
+    "demo": "node bin/raze demo --sever-delivery",
+    "test": "node test/layer1.test.js && node test/layer2.test.js && node test/layer3.test.js && node test/layer4.test.js",
+    "test:offline": "node test/layer1.test.js && node test/layer4.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "description": "Keeps merchant business state correct when Razorpay webhook delivery is duplicated, delayed, rejected, or absent.",
+  "dependencies": {
+    "embedded-postgres": "^18.4.0-beta.17",
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
+  },
+  "bin": {
+    "raze": "./bin/raze"
+  }
+}

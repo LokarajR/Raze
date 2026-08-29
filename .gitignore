@@ -1,0 +1,6 @@
+.pgdata/
+node_modules/
+.env
+*.log
+demo-run.txt
+audit-report.json

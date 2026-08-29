@@ -1,0 +1,327 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * raze — command line interface.
+ *
+ * Every command except `explain` runs with no LLM API key. That is not a
+ * convenience, it is the point: the correctness engine is deterministic. The LLM
+ * explains findings the engine has already confirmed. It never discovers, never
+ * decides, never gates.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const RAZE = path.join(__dirname, '..');
+const ROOT = path.join(RAZE, '..');
+/**
+ * Delivery corpus. The bundled copy under measurement/ is what makes this
+ * package stand alone — a clone of raze/ by itself must be able to run every
+ * probe. The parent-directory path is only a fallback for working inside the
+ * original measurement repo.
+ */
+const LOG = process.env.RAZE_CORPUS
+  || [path.join(RAZE, 'measurement', 'deliveries.jsonl'), path.join(ROOT, 'deliveries.jsonl')]
+       .find((p) => fs.existsSync(p))
+  || path.join(RAZE, 'measurement', 'deliveries.jsonl');
+
+const { connect, migrate, shutdown } = require(path.join(RAZE, 'src', 'db'));
+const { createReconciler } = require(path.join(RAZE, 'src', 'reconcile'));
+const { createLedger } = require(path.join(RAZE, 'src', 'ledger'));
+const { createAuditor } = require(path.join(RAZE, 'src', 'audit'));
+const { MERCHANT_SCHEMA } = require(path.join(RAZE, 'examples', 'demo-merchant', 'server'));
+
+// ---------------------------------------------------------------------------
+const argv = process.argv.slice(2);
+const cmd = argv[0];
+const flag = (name, dflt) => {
+  const i = argv.indexOf(`--${name}`);
+  return i === -1 ? dflt : (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true);
+};
+const has = (name) => argv.includes(`--${name}`);
+
+function loadEnv() {
+  const out = {};
+  for (const p of [path.join(RAZE, '.env'), path.join(ROOT, 'probe-server', '.env')]) {
+    try {
+      for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+        const i = line.indexOf('=');
+        if (i > 0 && !line.trim().startsWith('#')) {
+          const k = line.slice(0, i).trim();
+          if (!(k in out)) out[k] = line.slice(i + 1).trim();
+        }
+      }
+    } catch {}
+  }
+  return { ...out, ...process.env };
+}
+const env = loadEnv();
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const line = (n = 62) => '-'.repeat(n);
+
+function requireRazorpay() {
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    console.error('\nRazorpay Test Mode credentials not found.');
+    console.error('Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET, or copy .env.example to .env.\n');
+    process.exit(1);
+  }
+}
+
+const rzpAuth = () =>
+  'Basic ' + Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString('base64');
+
+// ---------------------------------------------------------------------------
+// commands
+// ---------------------------------------------------------------------------
+
+async function cmdGate() {
+  requireRazorpay();
+  await new Promise((resolve) => {
+    const c = spawn(process.execPath, [path.join(RAZE, 'gate', 'reconcile-gate.js')], { stdio: 'inherit' });
+    c.on('exit', resolve);
+  });
+}
+
+async function cmdInit() {
+  const { pool, url, embedded } = await connect();
+  const files = await migrate(pool);
+  await pool.query(MERCHANT_SCHEMA);
+  console.log(`\nraze init`);
+  console.log(`  postgres    ${embedded ? 'embedded (raze/.pgdata)' : url.replace(/:[^:@]*@/, ':***@')}`);
+  console.log(`  migrations  ${files.join(', ')}`);
+  console.log(`  razorpay    ${env.RAZORPAY_KEY_ID ? 'credentials present' : 'NOT CONFIGURED'}`);
+  console.log(`  corpus      ${fs.existsSync(LOG) ? `${LOG}` : 'MISSING'}\n`);
+  await shutdown(pool);
+}
+
+async function startMerchant(mode, databaseUrl, port) {
+  const child = spawn(process.execPath, [path.join(RAZE, 'examples', 'demo-merchant', 'server.js')], {
+    env: { ...process.env, MODE: mode, PORT: String(port),
+           RAZORPAY_WEBHOOK_SECRET: env.RAZORPAY_WEBHOOK_SECRET || '', DATABASE_URL: databaseUrl },
+    stdio: ['ignore', 'ignore', 'inherit'],
+  });
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    try { if ((await fetch(`http://127.0.0.1:${port}/health`)).ok) return child; } catch {}
+    await sleep(200);
+  }
+  child.kill();
+  throw new Error(`demo merchant (${mode}) did not start on :${port}`);
+}
+
+function renderAudit(targetLabel, results) {
+  const findings = results.filter((r) => !r.pass);
+  console.log(`  Target: ${targetLabel}`);
+  for (const r of results) {
+    const mark = r.pass ? ' ok ' : 'FIND';
+    console.log(`  ${mark}  ${r.title.padEnd(24)} ${r.observed}`);
+  }
+  const verdict = findings.length === 0
+    ? `${results.length}/${results.length} PASS`
+    : `${results.length - findings.length}/${results.length} pass, ${findings.length} finding(s) — UNSAFE TO SHIP`;
+  console.log(`\n  ${verdict}\n`);
+  return findings;
+}
+
+async function cmdAudit() {
+  const { pool, url } = await connect();
+  await migrate(pool);
+  await pool.query(MERCHANT_SCHEMA);
+
+  const target = flag('target', null);
+  const port = Number(flag('port', 4100));
+  let child = null;
+  let targetUrl = target;
+  let label = target;
+
+  if (!target || ['broken', 'correct', 'protected'].includes(target)) {
+    const mode = target || 'broken';
+    child = await startMerchant(mode, url, port);
+    targetUrl = `http://127.0.0.1:${port}/webhook`;
+    label = `demo-merchant (${mode})`;
+  }
+
+  console.log('');
+  const auditor = createAuditor({ targetUrl, pool, logFile: LOG, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET });
+  const results = await auditor.run();
+  const findings = renderAudit(label, results);
+
+  if (has('json')) {
+    const out = String(flag('json', 'audit-report.json'));
+    fs.writeFileSync(out, JSON.stringify({ generated_at: new Date().toISOString(), target: label, results }, null, 2));
+    console.log(`  report: ${out}\n`);
+  }
+
+  if (child) child.kill();
+  await shutdown(pool);
+  process.exit(findings.length ? 1 : 0);
+}
+
+async function cmdReconcile() {
+  requireRazorpay();
+  const { pool } = await connect();
+  await migrate(pool);
+  await pool.query(MERCHANT_SCHEMA);
+
+  const rec = createReconciler({
+    db: pool,
+    razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
+    localOrderIds: async () => {
+      const r = await pool.query('SELECT order_id FROM shop_orders');
+      return new Set(r.rows.map((x) => x.order_id));
+    },
+    config: { coldStartMs: Number(flag('lookback-hours', 72)) * 3600 * 1000 },
+  });
+
+  const r = await rec.runOnce();
+  console.log('');
+  if (!r.ok) {
+    console.log(`  reconcile FAILED: ${r.error}`);
+    console.log('  the window was not covered — this is not the same as finding nothing\n');
+  } else {
+    console.log(`  window     ${r.windowFrom.toISOString()} -> ${r.windowTo.toISOString()}`);
+    console.log(`  razorpay   ${r.razorpayCount} settled payment(s)`);
+    console.log(`  local      ${r.localCount} known order(s)`);
+    console.log(`  drift      ${r.drift} found, ${r.repaired} queued for repair\n`);
+  }
+  await shutdown(pool);
+  process.exit(r.ok ? 0 : 1);
+}
+
+async function cmdLedger() {
+  const { pool } = await connect();
+  await migrate(pool);
+  const ledger = createLedger({
+    db: pool, razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
+  });
+  if (has('sweep')) {
+    requireRazorpay();
+    const s = await ledger.sweepOnce();
+    console.log(`\n  swept ${s.checked}: recovered ${s.recovered}, failed ${s.failed}, abandoned ${s.abandoned}, unknown ${s.unknown}`);
+    for (const d of s.details) console.log(`    ${d.subject_id.padEnd(24)} ${d.outcome}`);
+  }
+  const st = await ledger.status();
+  console.log(`\n  Expectations`);
+  console.log(`    open        ${st.open}   (${st.due} past deadline)`);
+  console.log(`    fulfilled   ${st.fulfilled}`);
+  console.log(`    recovered   ${st.recovered}`);
+  console.log(`    failed      ${st.failed}`);
+  console.log(`    abandoned   ${st.abandoned}\n`);
+  await shutdown(pool);
+}
+
+async function cmdStatus() {
+  const { pool, embedded, url } = await connect();
+  await migrate(pool);
+  const inbox = await pool.query(
+    `SELECT count(*) FILTER (WHERE processed_at IS NULL)::int unprocessed,
+            count(*) FILTER (WHERE processed_at IS NOT NULL)::int processed,
+            count(*) FILTER (WHERE source='reconcile')::int repaired
+       FROM raze_inbox`
+  );
+  const outbox = await pool.query(
+    `SELECT count(*) FILTER (WHERE delivered_at IS NULL)::int pending FROM raze_outbox`
+  );
+  const rec = await pool.query(
+    `SELECT ran_at, ok, drift_found, error FROM raze_reconcile_runs ORDER BY ran_at DESC LIMIT 1`
+  );
+  const led = await pool.query(
+    `SELECT count(*) FILTER (WHERE resolved_at IS NULL)::int open,
+            count(*) FILTER (WHERE resolution IN ('failed','abandoned'))::int flagged
+       FROM raze_expectations`
+  );
+
+  const r = rec.rows[0];
+  const recLine = !r ? 'NEVER RUN  no window has been covered'
+    : r.ok ? `RAN        ${Math.round((Date.now() - new Date(r.ran_at)) / 1000)}s ago, ${r.drift_found} drift`
+           : `FAILED     ${r.error}`;
+
+  console.log(`\nRaze\n`);
+  console.log(`  Storage          ${embedded ? 'embedded postgres' : url.replace(/:[^:@]*@/, ':***@')}`);
+  console.log(`  Reconciliation   ${recLine}`);
+  console.log(`  Ledger           ${led.rows[0].open} open, ${led.rows[0].flagged} flagged`);
+  console.log(`  Inbox            ${inbox.rows[0].unprocessed} unprocessed, ${inbox.rows[0].processed} processed, ${inbox.rows[0].repaired} via reconcile`);
+  console.log(`  Outbox           ${outbox.rows[0].pending} pending\n`);
+  await shutdown(pool);
+}
+
+async function cmdProtect() {
+  requireRazorpay();
+  const port = Number(flag('port', 4100));
+  const { pool, url } = await connect();
+  await migrate(pool);
+  await pool.query(MERCHANT_SCHEMA);
+
+  const child = await startMerchant('protected', url, port);
+  const rec = createReconciler({
+    db: pool,
+    razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
+    localOrderIds: async () => {
+      const r = await pool.query('SELECT order_id FROM shop_orders');
+      return new Set(r.rows.map((x) => x.order_id));
+    },
+  });
+  const ledger = createLedger({
+    db: pool, razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
+  });
+  rec.start();
+  ledger.start();
+
+  console.log(`\n  runtime installed        http://127.0.0.1:${port}/webhook`);
+  console.log(`  ledger armed             sweep every ${ledger.config.sweepIntervalMs / 1000}s`);
+  console.log(`  reconciliation running   every ${rec.config.intervalMs / 1000}s\n`);
+  console.log('  ctrl-c to stop\n');
+
+  const stop = async () => { rec.stop(); ledger.stop(); child.kill(); await shutdown(pool); process.exit(0); };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  await new Promise(() => {});
+}
+
+async function cmdExplain() {
+  const finding = argv[1];
+  if (!finding) { console.error('usage: raze explain <finding-name>'); process.exit(2); }
+  const { explain } = require(path.join(RAZE, 'src', 'explain'));
+  const text = await explain(finding, env);
+  console.log(`\n${text}\n`);
+}
+
+function cmdHelp() {
+  console.log(`
+raze — keeps merchant business state correct when webhook delivery is
+       duplicated, delayed, rejected, or absent.
+
+  raze gate                   run the reconciliation gate, write results
+  raze init                   run migrations, verify config
+  raze audit [--target URL]   run the five probes against a target
+                              --target broken|correct|protected starts the demo merchant
+                              --json [file] write a machine-readable report
+  raze protect                install runtime, arm ledger, start reconciliation
+  raze reconcile [--lookback-hours N]
+                              run one reconciliation pass now
+  raze ledger [--sweep]       show expectations; --sweep classifies overdue ones
+  raze status                 show protection state
+  raze demo [--sever-delivery]
+                              scripted end-to-end demonstration
+  raze explain <finding>      LLM explanation of a confirmed finding (optional)
+
+Every command except 'explain' runs with no LLM API key.
+`);
+}
+
+const commands = {
+  gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile,
+  ledger: cmdLedger, status: cmdStatus, protect: cmdProtect, explain: cmdExplain,
+  demo: async () => { await require(path.join(RAZE, 'src', 'demo'))({ env, flag, has, LOG }); },
+  help: cmdHelp,
+};
+
+(async () => {
+  const fn = commands[cmd];
+  if (!fn) { cmdHelp(); process.exit(cmd ? 2 : 0); }
+  try { await fn(); }
+  catch (err) { console.error(`\n${err.message}\n`); process.exit(1); }
+})();
