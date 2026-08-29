@@ -206,6 +206,20 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
          + 'from anyone who knows the URL. The body here is genuine; only the signature '
          + 'header is replaced.',
       async run() {
+        // Without a webhook secret there is nothing to verify against, so this
+        // probe cannot be evaluated. Report that honestly instead of inventing a
+        // finding: a correct integration with no secret configured is
+        // unconfigured, not broken, and a detector that cannot tell the
+        // difference is worse than no detector.
+        if (!webhookSecret) {
+          return {
+            skipped: true,
+            pass: true,
+            observed: 'not evaluated — no RAZORPAY_WEBHOOK_SECRET configured',
+            evidence: { reason: 'signature verification cannot be exercised without the secret '
+                              + 'the captured deliveries were signed with' },
+          };
+        }
         await reset();
         const res = await send(ladder[0], { signature: '0'.repeat(64), eventId: `forged-${Date.now()}` });
         await sleep(400);

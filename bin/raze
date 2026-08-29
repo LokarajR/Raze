@@ -114,15 +114,19 @@ async function startMerchant(mode, databaseUrl, port) {
 
 function renderAudit(targetLabel, results) {
   const findings = results.filter((r) => !r.pass);
+  const skipped = results.filter((r) => r.skipped);
+  const evaluated = results.length - skipped.length;
   console.log(`  Target: ${targetLabel}`);
   for (const r of results) {
-    const mark = r.pass ? ' ok ' : 'FIND';
+    const mark = r.skipped ? 'SKIP' : r.pass ? ' ok ' : 'FIND';
     console.log(`  ${mark}  ${r.title.padEnd(24)} ${r.observed}`);
   }
   const verdict = findings.length === 0
-    ? `${results.length}/${results.length} PASS`
-    : `${results.length - findings.length}/${results.length} pass, ${findings.length} finding(s) — UNSAFE TO SHIP`;
-  console.log(`\n  ${verdict}\n`);
+    ? `${evaluated}/${evaluated} PASS`
+    : `${evaluated - findings.length}/${evaluated} pass, ${findings.length} finding(s) — UNSAFE TO SHIP`;
+  console.log(`
+  ${verdict}${skipped.length ? `  (${skipped.length} not evaluated)` : ''}
+`);
   return findings;
 }
 

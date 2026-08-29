@@ -42,11 +42,15 @@ async function startMerchant(mode, databaseUrl, port, secret) {
 
 function render(results) {
   for (const r of results) {
-    console.log(`  ${r.pass ? ' ok ' : 'FIND'}  ${r.title.padEnd(24)} ${r.observed}`);
+    const mark = r.skipped ? 'SKIP' : r.pass ? ' ok ' : 'FIND';
+    console.log(`  ${mark}  ${r.title.padEnd(24)} ${r.observed}`);
   }
   const findings = results.filter((x) => !x.pass).length;
-  console.log(`\n  ${results.length - findings}/${results.length} pass` +
-    (findings ? `, ${findings} finding(s) — UNSAFE TO SHIP` : ''));
+  const skipped = results.filter((x) => x.skipped).length;
+  const evaluated = results.length - skipped;
+  console.log(`\n  ${evaluated - findings}/${evaluated} pass` +
+    (findings ? `, ${findings} finding(s) — UNSAFE TO SHIP` : '') +
+    (skipped ? `  (${skipped} not evaluated — no webhook secret configured)` : ''));
   return findings;
 }
 
