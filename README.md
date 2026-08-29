@@ -11,6 +11,18 @@ npm install
 npx raze demo --sever-delivery
 ```
 
+If you have a database and nothing else — no webhook, no handler, no secret:
+
+```
+npx raze setup --url https://your-host/webhook   # reads your schema, proposes the
+                                                 # mapping, registers the webhook
+npx raze watch --table orders --key order_id     # notice payments that never arrive
+npx raze protect                                 # run it
+```
+
+You write no webhook code. `--dry-run` shows every action first and changes
+nothing.
+
 ## Three mechanisms
 
 | Mechanism | Question it answers | What it catches |
@@ -225,69 +237,216 @@ WHERE shop_orders.credit_count = 0      -- a second delivery matches nothing
 and added HMAC verification with `timingSafeEqual`, plus an ordering guard
 (`WHERE status NOT IN ('paid','refunded')`).
 
-### Where the patch comes from
+### Where the patch comes from, and how well each does
 
-Three interchangeable providers, since the probes — not the model — decide
-whether a patch worked:
+Three interchangeable providers, because the probes — not the model — decide
+whether a patch worked.
 
-| Provider | Needs | Notes |
+| Provider | Needs | Measured on the same 5-finding repair |
 |---|---|---|
-| `claude` | the Claude Code CLI on PATH | **default.** Runs on an existing subscription, no API credits |
+| `claude` | Claude Code CLI on PATH | **5 findings → 0**, one round. Runs on an existing subscription, no API credits. |
+| `ollama` | ollama + a local model | `qwen2.5-coder:7b`: **5 → 3**, then plateaued. Fully offline. |
 | `api` | `ANTHROPIC_API_KEY` with credit | direct Anthropic API |
-| `ollama` | ollama installed | fully local and offline |
 
-Pin one with `RAZE_PROVIDER`. If `ANTHROPIC_API_KEY` is set but empty of credit
-the CLI will prefer it and fail, so the agent strips that variable when invoking
-the CLI.
+A local 7B does real work here and does not finish the job. Both failing runs
+restored the original file and exited non-zero — no false success.
 
-Every other raze command is deterministic and needs none of this.
+Local models are asked for **one edit at a time**, as a search/replace block
+applied deterministically here, not a whole-file rewrite. Asking a 3B for the
+complete file was measured failing three rounds running: it returned the source
+almost unchanged, because reproducing 120 lines without drifting is a different
+skill from seeing the bug.
 
-## Merchant API
-
-```js
-const raze = require('raze');
-
-const rz = raze.create({
-  db: pool,                        // pg Pool
-  webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET,
-  razorpay: { keyId, keySecret },
-});
-
-rz.on('payment.captured', async (event, tx) => {
-  // Business logic only. Runs inside a transaction.
-  // Dedupe, signature and ordering are already handled.
-  await tx.query('UPDATE orders SET status = $1 WHERE id = $2',
-    ['paid', event.payload.payment.entity.order_id]);
-});
-
-app.use('/webhooks/razorpay', express.raw({ type: () => true }), rz.middleware());
-```
-
-Register an expectation inside your own transaction, so an order cannot exist
-without the expectation that it will be paid:
-
-```js
-await rz.expect({ subjectType: 'order', subjectId: order.id,
-                  event: 'payment.captured', within: '15m' }, tx);
-```
+Model choice counts free RAM **and** GPU VRAM, and prefers a model ollama already
+holds resident. Pin one with `RAZE_PROVIDER`.
 
 ## Commands
 
+### Getting started
+
 ```
-raze gate                   run the reconciliation gate, write results
-raze init                   run migrations, verify config
-raze audit [--target ...]   run the five probes  (broken|correct|protected|URL)
-raze protect                install runtime, arm ledger, start reconciliation
-raze reconcile              run one reconciliation pass now
-raze ledger [--sweep]       show expectations; --sweep classifies overdue ones
-raze status                 show protection state
-raze demo [--sever-delivery]
-raze explain <finding>      LLM explanation — the only command needing an API key
+raze setup --url URL        build the integration: read your schema, propose the
+                            mapping, generate a secret, register the webhook with
+                            Razorpay, read it back to confirm. --dry-run first.
+raze infer [--out FILE]     read your schema and propose the mapping, nothing else
+raze init                   run migrations, verify configuration
+raze gate                   run the reconciliation gate and record the outcome
 ```
 
-**Every command except `explain` runs with no LLM API key.** The LLM explains
-findings the deterministic engine has already confirmed. It never discovers,
-never decides, never gates.
+### Running
+
+```
+raze protect                runtime + ledger + reconciliation
+raze watch --table T --key C
+                            arm expectations from your orders table, so a payment
+                            that never arrives is noticed without you writing code
+raze reconcile              one reconciliation pass now
+raze ledger [--sweep]       expectations; --sweep classifies the overdue ones
+raze status                 protection state
+```
+
+### Looking at it
+
+```
+raze audit [--target ...]   the five probes against real captured deliveries
+raze insights               what Raze has learned from your own traffic
+raze demo [--sever-delivery]
+raze fix [--file PATH]      repair a handler in place (the only command that
+                            generates code; --restore undoes it)
+raze explain <finding>      explanation of a confirmed finding
+```
+
+**Everything except `fix` and `explain` is deterministic and needs no model.**
+
+## Two ways to write the merchant side
+
+### Declare it — no handler at all
+
+The merchant says what an event means for their data. Raze compiles it to
+parameterised SQL and runs it inside the same transaction as the dedupe write.
+
+```js
+rz.map('payment.captured', {
+  table: 'orders',
+  key:   { column: 'order_id', from: 'payload.payment.entity.order_id' },
+  set:   { status: { literal: 'paid' } },
+  add:   { credited_paise: 'payload.payment.entity.amount' },
+  guard: { column: 'status', notIn: ['refunded'] },
+});
+```
+
+No route, no signature check, no dedupe, no ordering logic, no transaction
+handling, no error path. There is no merchant function in the request path, so
+there is nothing to throw, hang, forget to respond, or half-apply.
+
+Every identifier is validated against the database catalogue at registration, not
+at delivery time — a webhook arriving at 3am is the wrong moment to discover a
+typo. Values are always bound parameters.
+
+`raze infer` writes this file for you by reading your schema. It proposes and
+never applies: it can see that a column named `order_id` holds a Razorpay order
+id, but not whether a refund should reverse a balance. Anything requiring that
+judgement is emitted as a QUESTION.
+
+### MongoDB
+
+Same idea, different store:
+
+```js
+rz.map('payment.captured', {
+  collection: 'orders',
+  key:   { field: 'razorpay_order_id', from: 'payload.payment.entity.order_id' },
+  set:   { payment_status: { literal: 'paid' } },
+  inc:   { amount_paise: 'payload.payment.entity.amount' },
+  guard: { field: 'payment_status', notIn: ['refunded'] },
+});
+```
+
+**The guarantee here is different and the difference is not hidden.** With
+Postgres, Raze's dedupe write and the business write commit in one transaction.
+That is impossible across two stores, so the idempotency guard travels inside the
+update instead: each document records the event ids applied to it, and the filter
+requires the incoming one to be absent. MongoDB applies a single-document update
+atomically, so a retry matches nothing and does nothing — including after a crash
+between the Mongo write and the inbox update.
+
+What is genuinely lost: your own additional writes cannot join Raze's
+transaction, so you must make those idempotent yourself.
+
+Inference is also weaker here and says so. Postgres declares every column; Mongo
+declares nothing, so the shape is sampled from documents that exist and a field
+seen in 3 of 200 is reported with that ratio attached.
+
+### Or keep your handler
+
+```js
+rz.on('payment.captured', async (event, tx, meta) => {
+  // Business logic only. Dedupe, signature and ordering already handled.
+  // meta carries the delivery as it arrived: event id, headers, raw body.
+  await tx.query('UPDATE orders SET status = $1 WHERE id = $2',
+    ['paid', event.payload.payment.entity.order_id]);
+});
+```
+
+## What Raze learns while it runs
+
+The retry ladder was not read from documentation, it was measured. `raze insights`
+applies the same method continuously to your own traffic.
+
+| Learned from | Used for |
+|---|---|
+| Every delivery's arrival, per event type | your account's real first-retry delay, flagged when it diverges from the measured baseline |
+| Every handler run | p50/p95/p99 latency and failure rate, with the most common error named |
+| Resolved expectations | the p99 of real fulfilments — which is what a deadline should be. Fifteen minutes is a guess. |
+| Reconciliation runs | how often delivery misses something |
+
+Statistics, not a model. Every question here has an exact answer available from
+the record, and a recommendation you can act on ("p99 of 4,312 observations")
+beats an inference you cannot inspect.
+
+Two rules the tests enforce: **every figure carries its sample count**, and below
+twenty observations it reports insufficient data instead of a finding. And an
+observation that cannot be written is swallowed — diagnostics must never break a
+payment.
+
+It does not promise there will be no failures. Nothing can. It notices a handler
+drifting toward the latency that earns duplicate deliveries, an account whose
+retry timing has changed, or reconciliation that keeps finding drift, before
+those become incidents.
+
+## Proof against code we did not write
+
+```
+npm run demo:public
+```
+
+Clones a real published Razorpay integration at run time, replays the genuine
+16-attempt ladder at it, and reads the result out of that project's own MongoDB.
+Their code is never vendored — those repositories carry no licence, so they are
+fetched like a fixture and nothing from them is committed here.
+
+```
+as published   16 deliveries, all answered 200, nothing written.
+               Model.update() was removed in modern mongoose, so their handler
+               throws, catches its own exception and answers res.send(err) —
+               which Express sends as 200. Razorpay reads that as delivered and
+               stops retrying. The payment is gone and their logs show no failure.
+
+behind Raze    the same 16 deliveries deduplicated to one event, the raw bytes
+               stored, the real error surfaced, the event still held and retried.
+               Their handler is just as broken; the payment is recoverable
+               instead of lost.
+```
+
+Four public integrations were audited this way. Every one has a real defect: one
+has no webhook handler at all and relies entirely on the browser callback; one
+depends on a module-level variable that its own code nulls before the webhook can
+use it; one verifies signatures over re-serialised JSON rather than the raw
+bytes; one extends a subscription by 30 days per delivery with no idempotency —
+480 days for a single payment on the measured ladder.
+
+None of them was written carelessly. That is the argument for this project.
+
+## Tests
+
+```
+npm test              59 assertions across seven layers
+npm run test:offline  the layers that need no network
+```
+
+| Layer | Covers |
+|---|---|
+| 1 | runtime: dedupe, signature, ordering, rollback, backoff, raw-body fidelity |
+| 2 | ledger: recovered / failed / abandoned, on three real Razorpay subjects |
+| 3 | reconciliation: live API, drift detection, idempotent repair |
+| 4 | audit: broken caught, control clean and stable, protected passes |
+| 5 | declarative mappings with no merchant handler |
+| 6 | learning, sample-count discipline, and never breaking a payment |
+| 7 | MongoDB mappings and inference |
+
+Layers 2 and 3 call the live Razorpay API. Layer 2 creates a real order and
+deliberately never pays it — the abandonment case cannot be faked without losing
+the point.
 
 ## Two modes
 
@@ -313,32 +472,47 @@ from the product failing.
 
 ```
 raze/
-├── bin/raze                  CLI
+├── bin/raze                    CLI
 ├── src/
-│   ├── runtime/              Layer 1 — protected runtime
-│   ├── reconcile/            Layer 3 — reconciliation daemon
-│   ├── ledger/               Layer 2 — expectation ledger
-│   ├── audit/                Layer 4 — the five probes
-│   ├── explain/              optional LLM explanation
-│   ├── db.js                 Postgres, embedded or DATABASE_URL
-│   └── demo.js               scripted demonstration
+│   ├── runtime/                Layer 1 — protected runtime
+│   ├── reconcile/              Layer 3 — reconciliation daemon
+│   ├── ledger/                 Layer 2 — expectation ledger
+│   ├── audit/                  Layer 4 — the five probes
+│   ├── mapping/                declarative mappings, Postgres
+│   ├── mongo/                  declarative mappings and inference, MongoDB
+│   ├── infer/                  read a schema, propose a mapping
+│   ├── learn/                  observe, then compute over what was observed
+│   ├── agent/                  repair agent: providers, extraction, local models
+│   ├── db.js                   Postgres, embedded or DATABASE_URL
+│   └── demo.js                 scripted demonstration
 ├── migrations/
-├── examples/demo-merchant/   one codebase, three integrations
-├── gate/                     §1 gate + its recorded results
-├── test/                     layer1..layer4, real API and real Postgres
-└── measurement/              the 796-delivery study this is built on
+├── examples/
+│   ├── demo-merchant/          one codebase, three integrations
+│   ├── merchant-legacy/        an ordinary handler, the repair agent's target
+│   └── public-merchant/        real published integrations, cloned at run time
+├── gate/                       the §1 gate and its recorded results
+├── test/                       layer1..layer7, real API and real Postgres
+└── measurement/                the 796-delivery study this is built on
 ```
 
 ## Honest limitations
 
-- The reconciliation mapping depends on `order_id` being present on enumerated
-  payments. The gate verified this holds; `gate/RECONCILE_GATE_RESULTS.md`
-  records the evidence. If it ever stops holding, the fallback is to persist
-  `payment_id` at order creation.
-- Recovery cannot outrun an unavailable Razorpay API. A reconciliation run that
-  could not complete is recorded as failed, never as clean — a window that was
-  not covered is not the same as a window with no drift.
-- The ledger cannot classify a subject Razorpay will not answer for. Those
-  expectations stay open rather than being guessed at.
-- `raze audit` measures the integration in front of it. It says nothing about
+- **`raze fix` is not reliable.** Three runs against the same file: two full
+  repairs, one patch that broke the merchant outright. It is a demonstration, not
+  a guarantee, and the verifier is what makes it safe to run at all.
+- **A local model does not finish the job.** A 7B fixed two of five defects and
+  stopped. Use the Claude Code CLI provider if you want it completed.
+- **MongoDB has no shared transaction with the inbox.** The idempotency guard is
+  inside the update instead, which is sound for Raze's own writes but does not
+  extend to yours.
+- **Inference proposes, never applies.** On an unfamiliar schema it proposes
+  nothing rather than guessing — a wrong guess about which row gets marked paid
+  moves real money.
+- **`raze watch` polls.** An order created and paid inside one interval is armed
+  late. Calling `rz.expect()` in your own transaction is stronger.
+- **Reconciliation cannot outrun an unavailable API.** A run that could not
+  complete is recorded as failed, never as clean.
+- **`raze audit` measures the integration in front of it.** It says nothing about
   code paths no probe exercises.
+- **`raze setup` has been exercised in `--dry-run` only.** The webhook
+  registration path is written and unverified against a live account.
