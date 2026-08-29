@@ -83,7 +83,12 @@ async function main() {
 
   // The merchant's own table. Raze is told about it; it is never told how to
   // write to it beyond the declaration below.
-  await pool.query(`CREATE TABLE IF NOT EXISTS shop_orders (
+  //
+  // Deliberately NOT named shop_orders: layer 4's demo merchant owns that name
+  // with a different shape, and CREATE TABLE IF NOT EXISTS would silently keep
+  // whichever version ran first. Sharing a table name across test files couples
+  // them through the data directory, which persists between runs.
+  await pool.query(`CREATE TABLE IF NOT EXISTS map_orders (
     order_id       TEXT PRIMARY KEY,
     status         TEXT NOT NULL DEFAULT 'created',
     credited_paise BIGINT NOT NULL DEFAULT 0,
@@ -110,7 +115,7 @@ async function main() {
   );
 
   await m.map('payment.captured', {
-    table: 'shop_orders',
+    table: 'map_orders',
     key: { column: 'order_id', from: 'payload.payment.entity.order_id' },
     set: { status: { literal: 'paid' } },
     add: { credited_paise: 'payload.payment.entity.amount', credit_count: { literal: 1 } },
@@ -118,14 +123,14 @@ async function main() {
   });
 
   await m.map('payment.authorized', {
-    table: 'shop_orders',
+    table: 'map_orders',
     key: { column: 'order_id', from: 'payload.payment.entity.order_id' },
     set: { status: { literal: 'authorized' } },
     guard: { column: 'status', notIn: ['paid', 'refunded'] },
   });
 
   await m.map('refund.created', {
-    table: 'shop_orders',
+    table: 'map_orders',
     key: { column: 'order_id', from: 'payload.payment.entity.order_id' },
     set: { status: { literal: 'refunded' } },
     add: { credited_paise: { literal: 0 } },
@@ -147,7 +152,7 @@ async function main() {
 
   const state = async (orderId) => {
     const r = await pool.query(
-      'SELECT status, credited_paise, credit_count FROM shop_orders WHERE order_id=$1', [orderId]);
+      'SELECT status, credited_paise, credit_count FROM map_orders WHERE order_id=$1', [orderId]);
     const row = r.rows[0];
     return row
       ? { status: row.status, credited: Number(row.credited_paise), count: Number(row.credit_count) }
@@ -201,7 +206,7 @@ async function main() {
   // ---- 5. an event with nothing addressable is skipped, not failed -------
   await reset();
   const stmt = mapping.compile(
-    { table: 'shop_orders', key: { column: 'order_id', from: 'payload.nothing.here' },
+    { table: 'map_orders', key: { column: 'order_id', from: 'payload.nothing.here' },
       set: { status: 'x' }, add: {}, guard: null, insertIfMissing: true },
     { payload: {} }
   );
@@ -212,7 +217,7 @@ async function main() {
   let rejected = false;
   try {
     await m.map('payment.failed', {
-      table: 'shop_orders; DROP TABLE shop_orders; --',
+      table: 'map_orders; DROP TABLE map_orders; --',
       key: { column: 'order_id', from: 'payload.payment.entity.order_id' },
       set: { status: { literal: 'x' } },
     });
@@ -220,7 +225,7 @@ async function main() {
     rejected = /invalid table name/.test(err.message);
   }
   const stillThere = await pool.query(
-    `SELECT to_regclass('public.shop_orders') IS NOT NULL AS ok`);
+    `SELECT to_regclass('public.map_orders') IS NOT NULL AS ok`);
   check('an identifier that is not a plain name is refused',
     rejected && stillThere.rows[0].ok, `rejected=${rejected}`);
 

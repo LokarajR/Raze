@@ -363,6 +363,8 @@ raze — keeps merchant business state correct when webhook delivery is
                               scripted end-to-end demonstration
   raze infer [--out FILE]     read your schema, propose the event mapping.
                               Deterministic. Proposes only; applies nothing.
+  raze insights               what Raze has learned from this merchant's traffic.
+                              Derived from observations, never modelled.
   raze fix [--file PATH]      repair a merchant handler in place: the probes find
                               the failures, a patch is generated from the real
                               source, the probes verify it. --restore undoes it.
@@ -375,6 +377,9 @@ Diagnosis and verification are always deterministic; only repair is generated.
 
 const commands = {
   gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile, infer: cmdInfer,
+  insights: async () => require(path.join(RAZE, 'src', 'insights-command'))({
+    RAZE, deps: { connect, migrate, shutdown },
+  }),
   fix: async () => require(path.join(RAZE, 'src', 'fix-command'))({
     env, flag, has, LOG, RAZE,
     deps: { connect, migrate, shutdown, createAuditor, MERCHANT_SCHEMA, renderAudit },
