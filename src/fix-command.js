@@ -95,7 +95,10 @@ module.exports = async function cmdFix({ env, flag, has, LOG, RAZE, deps }) {
 
   console.log(`\n  target   ${path.relative(process.cwd(), targetFile)}`);
   console.log(`  patcher  ${provider}` + (provider === 'claude' ? ' CLI (subscription, no API credits)' : ''));
-  console.log(`  model    ${MODEL}`);
+  const shownModel = provider === 'ollama'
+    ? (process.env.RAZE_OLLAMA_MODEL || require(path.join(RAZE, 'src', 'agent', 'ollama')).DEFAULT_MODEL)
+    : MODEL;
+  console.log(`  model    ${shownModel}`);
   console.log(`  probes   deterministic, business state read from Postgres\n`);
 
   console.log('  BEFORE\n');
