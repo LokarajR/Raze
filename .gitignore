@@ -4,3 +4,5 @@ node_modules/
 *.log
 demo-run.txt
 audit-report.json
+fix.txt
+*.raze-backup

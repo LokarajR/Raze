@@ -310,14 +310,22 @@ raze — keeps merchant business state correct when webhook delivery is
   raze status                 show protection state
   raze demo [--sever-delivery]
                               scripted end-to-end demonstration
+  raze fix [--file PATH]      repair a merchant handler in place: the probes find
+                              the failures, a patch is generated from the real
+                              source, the probes verify it. --restore undoes it.
   raze explain <finding>      LLM explanation of a confirmed finding (optional)
 
-Every command except 'explain' runs with no LLM API key.
+Every command except 'fix' and 'explain' runs with no LLM API key.
+Diagnosis and verification are always deterministic; only repair is generated.
 `);
 }
 
 const commands = {
   gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile,
+  fix: async () => require(path.join(RAZE, 'src', 'fix-command'))({
+    env, flag, has, LOG, RAZE,
+    deps: { connect, migrate, shutdown, createAuditor, MERCHANT_SCHEMA, renderAudit },
+  }),
   ledger: cmdLedger, status: cmdStatus, protect: cmdProtect, explain: cmdExplain,
   demo: async () => { await require(path.join(RAZE, 'src', 'demo'))({ env, flag, has, LOG }); },
   help: cmdHelp,
