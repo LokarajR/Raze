@@ -119,6 +119,19 @@ module.exports = async function cmdFix({ env, flag, has, LOG, RAZE, deps }) {
   await stopTarget();
   await shutdown(pool);
 
+  // The loop's verdict and the final audit must agree. If they do not, the
+  // harness is not repeatable and neither verdict can be trusted — say so rather
+  // than printing a success line over a failing audit.
+  const finalFindings = after.filter((r) => !r.pass && !r.skipped);
+  if (result.ok && finalFindings.length > 0) {
+    console.log('  VERIFICATION DISAGREEMENT');
+    console.log(`  The repair loop reported success, but the final audit found ${finalFindings.length}`);
+    console.log('  finding(s). That means audit runs are not independent of each other, so');
+    console.log('  neither verdict can be trusted. Treat this as UNREPAIRED.');
+    console.log('  Restore the original with:  raze fix --restore');
+    process.exit(1);
+  }
+
   if (result.ok) {
     console.log(`  Repaired in ${result.rounds} round(s).`);
     console.log('  The patch was written at run time from this file\'s real source and the');

@@ -95,15 +95,10 @@ function callClaudeCli(prompt, model) {
   return { text: out, usage: null };
 }
 
-function callOllama(prompt, model) {
-  const res = spawnSync('ollama', ['run', model], {
-    input: prompt, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-    timeout: 900000, shell: process.platform === 'win32',
-  });
-  if (res.error) throw new Error(`ollama failed: ${res.error.message}`);
-  const out = (res.stdout || '').trim();
-  if (!out) throw new Error(`ollama returned nothing. ${(res.stderr || '').slice(0, 300)}`);
-  return { text: out, usage: null };
+async function callOllama(prompt, model) {
+  const ollama = require('./ollama');
+  const out = await ollama.generate(prompt, { model });
+  return { text: out.text, usage: out.usage };
 }
 
 async function callApi(prompt, model, apiKey) {
@@ -123,7 +118,7 @@ async function callApi(prompt, model, apiKey) {
 
 async function callModel(prompt, { provider, model, apiKey }) {
   if (provider === 'claude') return callClaudeCli(prompt, model);
-  if (provider === 'ollama') return callOllama(prompt, process.env.RAZE_OLLAMA_MODEL || 'qwen2.5-coder:7b');
+  if (provider === 'ollama') return callOllama(prompt, process.env.RAZE_OLLAMA_MODEL);
   if (provider === 'api') {
     if (!apiKey) throw new Error('provider "api" needs ANTHROPIC_API_KEY');
     return callApi(prompt, model, apiKey);

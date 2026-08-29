@@ -110,9 +110,30 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
     };
   }
 
+  /**
+   * Clear every table in the schema before each probe.
+   *
+   * Not just the tables this harness knows about. A repaired handler may create
+   * its own — a dedupe table is the obvious one — and if that table survives
+   * between rounds, the next round sees every delivery as an already-processed
+   * repeat, writes nothing, and the probes report failures against code that is
+   * actually correct.
+   *
+   * That is exactly what happened once: a generated patch added a webhook_events
+   * table, passed its verification round, then failed the next audit with
+   * status=null because its own dedupe table still held the previous round's
+   * event ids. The patch was right; the reset was incomplete.
+   *
+   * Verification has to be repeatable to mean anything, so the reset discovers
+   * the tables rather than assuming them.
+   */
   async function reset() {
-    await pool.query('TRUNCATE shop_orders, shop_seen_events, shop_order_rank');
-    await pool.query('TRUNCATE raze_inbox, raze_subject_state');
+    const { rows } = await pool.query(
+      `SELECT tablename FROM pg_tables WHERE schemaname = 'public'`
+    );
+    if (rows.length === 0) return;
+    const names = rows.map((r) => `"${r.tablename}"`).join(', ');
+    await pool.query(`TRUNCATE ${names} RESTART IDENTITY CASCADE`);
   }
 
   /** Wait until the target stops changing state, so async workers can settle. */
