@@ -206,6 +206,28 @@ function sanityCheck(original, patched) {
 }
 
 /**
+ * One targeted edit, for a local model.
+ *
+ * A small model cannot reliably reproduce a whole file, so it is never asked to.
+ * It gets one finding and returns one search/replace block, which is applied
+ * here deterministically — the SEARCH text must occur exactly once or the edit
+ * is refused. See src/agent/local.js for why.
+ */
+async function localEdit({ source, filename, finding, model, log }) {
+  const local = require('./local');
+  const prompt = local.editPrompt({ source, filename, finding });
+  const reply = await local.generate(prompt, { model });
+  const applied = local.applyEdit(source, reply);
+  if (applied.error) {
+    log(`      edit refused: ${applied.error}`);
+    return null;
+  }
+  const firstLine = applied.search.split('\n')[0].trim().slice(0, 60);
+  log(`      edit: ${JSON.stringify(firstLine)} -> ${JSON.stringify(applied.replace.split('\n')[0].trim().slice(0, 60))}`);
+  return applied.source;
+}
+
+/**
  * Repair loop.
  *
  * audit -> if clean, stop -> generate patch -> apply -> re-audit
@@ -230,15 +252,39 @@ async function repair({ filePath, runAudit, apiKey, log = console.log, rounds = 
     log(`\n  ${findings.length} finding(s) to repair. Diagnosis is deterministic; the patch is generated.\n`);
 
     for (let round = 1; round <= rounds; round++) {
-      log(`  round ${round}: generating a patch from the real source and the real findings...`);
+      const provider = detectProvider();
+      let patched;
+      let usage = null;
 
-      const { source: patched, usage } = await generatePatch({
-        source: current,
-        filename: path.basename(filePath),
-        findings,
-        apiKey,
-        previousAttempt: round > 1,
-      });
+      if (provider === 'ollama' || provider === 'local') {
+        // Local models get one finding at a time. Asking for the whole file was
+        // measured failing three rounds running: the model returned the source
+        // almost unchanged rather than editing it.
+        const target = findings[0];
+        log(`  round ${round}: local model, one edit for "${target.title}"...`);
+        patched = await localEdit({
+          source: current,
+          filename: path.basename(filePath),
+          finding: target,
+          model: process.env.RAZE_OLLAMA_MODEL,
+          log,
+        });
+        if (!patched) {
+          history.push({ round, applied: false, reason: 'edit refused' });
+          continue;
+        }
+      } else {
+        log(`  round ${round}: generating a patch from the real source and the real findings...`);
+        const out = await generatePatch({
+          source: current,
+          filename: path.basename(filePath),
+          findings,
+          apiKey,
+          previousAttempt: round > 1,
+        });
+        patched = out.source;
+        usage = out.usage;
+      }
 
       const bad = sanityCheck(current, patched);
       if (bad) {
