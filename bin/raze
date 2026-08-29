@@ -293,6 +293,57 @@ async function cmdExplain() {
   console.log(`\n${text}\n`);
 }
 
+/**
+ * `raze infer` — read the merchant's schema, propose the mapping.
+ *
+ * Deterministic: the same schema and the same corpus always produce the same
+ * proposal. Nothing is applied; the output is a file for a human to read and
+ * correct before it is trusted with money.
+ */
+async function cmdInfer() {
+  const { infer, render } = require(path.join(RAZE, 'src', 'infer'));
+  const { pool } = await connect();
+  await migrate(pool);
+
+  const out = flag('out', null);
+  const { schema, proposals } = await infer({ pool, corpusPath: LOG });
+
+  console.log('');
+  console.log(`  schema     ${schema.length} table(s) outside raze_*`);
+  for (const t of schema) {
+    console.log(`               ${t.name}  (${t.columns.length} columns, pk ${t.primaryKey || 'none'})`);
+  }
+  console.log(`  corpus     ${LOG}`);
+  console.log(`  proposals  ${proposals.length}`);
+  console.log('');
+
+  for (const p of proposals) {
+    console.log(`  ${p.eventType}  ->  ${p.spec.table}`);
+    for (const e of p.evidence) console.log(`      ${e}`);
+    for (const q of p.questions) console.log(`      QUESTION: ${q}`);
+    console.log('');
+  }
+
+  if (proposals.length === 0) {
+    console.log('  Nothing matched. A table needs a column naming a Razorpay object');
+    console.log('  (order_id, payment_id, refund_id) before an event can be mapped to it.');
+    console.log('');
+  } else {
+    const text = render(proposals, { corpusPath: LOG });
+    if (out) {
+      fs.writeFileSync(String(out), text);
+      console.log(`  written to ${out}`);
+    } else {
+      console.log('  Re-run with --out raze.mapping.js to write this as a file.');
+    }
+    console.log('  Nothing has been applied. Review it, correct anything that does not');
+    console.log('  match what these events mean for your business, then commit it.');
+    console.log('');
+  }
+
+  await shutdown(pool);
+}
+
 function cmdHelp() {
   console.log(`
 raze — keeps merchant business state correct when webhook delivery is
@@ -310,6 +361,8 @@ raze — keeps merchant business state correct when webhook delivery is
   raze status                 show protection state
   raze demo [--sever-delivery]
                               scripted end-to-end demonstration
+  raze infer [--out FILE]     read your schema, propose the event mapping.
+                              Deterministic. Proposes only; applies nothing.
   raze fix [--file PATH]      repair a merchant handler in place: the probes find
                               the failures, a patch is generated from the real
                               source, the probes verify it. --restore undoes it.
@@ -321,7 +374,7 @@ Diagnosis and verification are always deterministic; only repair is generated.
 }
 
 const commands = {
-  gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile,
+  gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile, infer: cmdInfer,
   fix: async () => require(path.join(RAZE, 'src', 'fix-command'))({
     env, flag, has, LOG, RAZE,
     deps: { connect, migrate, shutdown, createAuditor, MERCHANT_SCHEMA, renderAudit },
