@@ -29,6 +29,40 @@
  */
 
 /**
+ * Strip comments before matching.
+ *
+ * Detection driven by prose is detection that fires on documentation. Raze's own
+ * mapping module was flagged as an unsafe webhook handler because a doc comment
+ * mentions payload.payment.entity and the generated SQL contains INSERT — it
+ * receives no requests at all. Comments are removed first so a pattern matches
+ * code or nothing.
+ */
+function stripComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(new RegExp('(^|[^:])//[^' + String.fromCharCode(92) + 'n]*', 'g'), '$1 ');
+}
+
+/**
+ * Does this file actually receive HTTP requests?
+ *
+ * Mentioning Razorpay's payload shape is not the same as handling a delivery. A
+ * compiler, a type definition or a test fixture can name the same paths without
+ * ever being reachable from the network.
+ */
+function servesARoute(code) {
+  return /(app|router)\s*\.\s*(post|use|all)\s*\(/.test(code)
+    || /export\s+(async\s+)?function\s+(POST|handler)/.test(code)
+    || /module\.exports\s*=\s*(async\s*)?(function\s*)?\(\s*req/.test(code)
+    || /(async\s+)?function\s+\w*(handler|webhook|verify|paymentSuccess)\w*\s*\(\s*req/i.test(code)
+    || /exports\.\w+\s*=\s*(async\s*)?\(\s*req/.test(code);
+}
+
+function receivesRequests(code) {
+  return /req\.(body|headers|rawBody)|request\.(body|headers)|req\s*,\s*res|headers\.get\s*\(/.test(code);
+}
+
+/**
  * Signature verified over re-serialised JSON rather than the raw bytes.
  *
  * Observed in 2 of 4 audited repositories. Razorpay signs the exact bytes it
@@ -235,6 +269,7 @@ const noSignatureVerification = {
   fixes: ['tampered-signature'],
 
   detect(source) {
+    if (!receivesRequests(source) || !servesARoute(source)) return null;
     const isWebhookHandler = /x-razorpay-event-id|payload\.payment\.entity|payload\.order\.entity/.test(source);
     if (!isWebhookHandler) return null;
     const verifies = /createHmac\s*\(|validateWebhookSignature\s*\(|timingSafeEqual\s*\(/.test(source);
@@ -275,20 +310,44 @@ const noIdempotency = {
   fixes: ['duplicate-delivery', 'timeout-retry', 'retry-storm'],
 
   detect(source) {
-    const readsEvents = /payload\.payment\.entity|payload\.order\.entity/.test(source);
-    if (!readsEvents) return null;
-    const writes = /INSERT\s+INTO|UPDATE\s+\w+\s+SET|\.save\s*\(|updateOne\s*\(|insertOne\s*\(/i.test(source);
-    if (!writes) return null;
+    // Recognise a Razorpay webhook handler by any of its real shapes, not just
+    // the Express/JavaScript one. TypeScript and Next.js handlers read the same
+    // signature header and the same event, written differently.
+    if (!receivesRequests(source) || !servesARoute(source)) return null;
+    const isHandler =
+      /x-razorpay-signature/i.test(source)
+      || /validateWebhookSignature/.test(source)
+      || /payload\.(payment|order|refund)\.entity/.test(source);
+    if (!isHandler) return null;
 
-    // Any durable use of the event id counts: stored, looked up, or deduped on.
-    const usesEventId = /x-razorpay-event-id/.test(source);
-    const dedupes = usesEventId && /(seen|processed|applied|dedup|exists|findOne|SELECT)/i.test(source);
+    // The defect is not "no dedupe". It is no dedupe AND a write that is not
+    // safe to repeat. A handler that only sets values — status = 'paid' — is
+    // idempotent by construction, and flagging it would make this detector
+    // noise. Only accumulating or creating writes are unsafe on a retry.
+    const nonIdempotent = [
+      /create\s*\(/,                       // ORM row creation
+      /insertOne\s*\(|insertMany\s*\(/, // Mongo insert
+      /new\s+\w+\s*\([^)]*\)[\s\S]{0,80}\.save\s*\(/, // new Model(...).save()
+      /\$inc\s*:/,                            // Mongo increment
+      /\$push\s*:/,                           // Mongo array append
+      /\+=\s*[\w.]+/,                         // in-code accumulation
+      /\w+\s*=\s*\w+\.\w+\s*\+\s*/,        // balance = balance + amount
+      /SET[\s\S]{0,120}=[\s\S]{0,40}\+/i,     // SQL accumulate
+      /INSERT\s+INTO(?![\s\S]{0,200}ON\s+CONFLICT)/i, // insert with no upsert
+    ];
+    const unsafe = nonIdempotent.find((re) => re.test(source));
+    if (!unsafe) return null;
+
+    // Any durable use of the event id counts as an attempt to deduplicate.
+    const usesEventId = /x-razorpay-event-id|razorpay_event_id|eventId|event_id/i.test(source);
+    const dedupes = usesEventId
+      && /(seen|processed|applied|dedup|exists|already|findOne|findUnique|SELECT)/i.test(source);
     if (dedupes) return null;
 
     return {
       evidence: usesEventId
-        ? 'the event id is read but never used to decide whether this event was already applied'
-        : 'the handler writes business state and never reads x-razorpay-event-id at all',
+        ? 'writes that are unsafe to repeat, and the event id is read but never used to check whether this event was already applied'
+        : 'writes that are unsafe to repeat, and x-razorpay-event-id is never read at all',
     };
   },
 
@@ -311,10 +370,11 @@ const PATTERNS = [
 
 /** Every pattern that matches this source. */
 function scan(source) {
+  const code = stripComments(source);
   const found = [];
   for (const p of PATTERNS) {
     let hit = null;
-    try { hit = p.detect(source); } catch { hit = null; }
+    try { hit = p.detect(code); } catch { hit = null; }
     if (hit) found.push({ pattern: p, ...hit, repairable: typeof p.repair === 'function' });
   }
   return found;
@@ -333,7 +393,7 @@ function repairAll(source) {
 
   for (const p of PATTERNS) {
     let hit = null;
-    try { hit = p.detect(current); } catch { hit = null; }
+    try { hit = p.detect(stripComments(current)); } catch { hit = null; }
     if (!hit) continue;
 
     const result = p.repair(current);
@@ -348,4 +408,4 @@ function repairAll(source) {
   return { source: current, applied, skipped, changed: current !== source };
 }
 
-module.exports = { PATTERNS, scan, repairAll };
+module.exports = { PATTERNS, scan, repairAll, stripComments, receivesRequests, servesARoute };
