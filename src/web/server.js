@@ -65,6 +65,9 @@ const S = {
   lastAudit: null,
   lastImpact: null,
   publicUrl: null,
+  stopping: false,        // a kill we asked for, so the exit handler stays quiet
+  restarts: [],           // timestamps, to notice a merchant that cannot stay up
+  restoredOnBoot: false,
 };
 
 const clients = new Set();
@@ -113,6 +116,107 @@ async function stopMerchant() {
   S.merchant.kill();
   S.merchant = null;
   await sleep(500);
+}
+
+// ---------------------------------------------------------------------------
+// staying armed
+// ---------------------------------------------------------------------------
+
+/**
+ * Which pipeline is armed, kept in Postgres rather than in this process.
+ *
+ * A deploy, a crash or a host moving the container all restart this process, and
+ * an armed merchant does not survive that. Holding the choice in memory meant a
+ * redeploy silently disarmed the console — the page still said "behind Raze"
+ * while there was nothing behind anything. Postgres is already required, already
+ * shared with the merchant, and outlives the container.
+ */
+async function rememberMode(pool, mode) {
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS raze_console_state (
+      id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      mode TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+    await pool.query(
+      `INSERT INTO raze_console_state (id, mode, updated_at) VALUES (1, $1, now())
+         ON CONFLICT (id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now()`,
+      [mode]
+    );
+  } catch (err) {
+    emit('warning', { message: `could not persist armed mode: ${err.message}` });
+  }
+}
+
+async function recallMode(pool) {
+  try {
+    const r = await pool.query('SELECT mode FROM raze_console_state WHERE id = 1');
+    return r.rows[0] ? r.rows[0].mode : 'none';
+  } catch { return 'none'; }
+}
+
+/**
+ * Start the merchant for a mode, and keep it running.
+ *
+ * The exit handler is what makes this hold. A merchant that dies on its own —
+ * OOM, an unhandled rejection in the handler being demonstrated — used to leave
+ * the console claiming to be armed while every delivery went nowhere. It is
+ * brought back, with a ceiling: five restarts inside a minute means it cannot
+ * stay up, and saying so is more useful than restarting forever.
+ */
+async function armMode({ pool, databaseUrl, secret, mode }) {
+  S.stopping = true;
+  await stopMerchant();
+  S.stopping = false;
+
+  const merchantMode = mode === 'unprotected' ? 'broken' : mode;
+  const child = await startMerchant(merchantMode, databaseUrl, secret, S.merchantPort);
+
+  child.on('exit', (code, signal) => {
+    if (S.stopping || S.mode === 'none') return;
+    emit('merchant-exit', { mode: S.mode, code, signal });
+
+    const now = Date.now();
+    S.restarts = S.restarts.filter((t) => now - t < 60000);
+    S.restarts.push(now);
+    if (S.restarts.length > 5) {
+      S.mode = 'none';
+      S.merchant = null;
+      emit('armed', { mode: 'none', reason: 'merchant exited repeatedly; not restarting' });
+      return;
+    }
+    setTimeout(() => {
+      if (S.mode === 'none') return;
+      armMode({ pool, databaseUrl, secret, mode: S.mode })
+        .catch((err) => emit('warning', { message: `restart failed: ${err.message}` }));
+    }, 1500);
+  });
+
+  S.merchant = child;
+  S.mode = mode;
+  await rememberMode(pool, mode);
+  emit('armed', { mode });
+  return mode;
+}
+
+/**
+ * Put back whatever was armed before this process existed.
+ *
+ * Deliberately does nothing on a first boot: arming something nobody asked for
+ * would start a deliberately broken merchant on a public URL.
+ */
+async function restoreArmed({ pool, databaseUrl, env }) {
+  const { resolveDemoSecret: rs } = require(path.join(RAZE, 'src', 'secret'));
+  const { secret } = rs(env);
+  const mode = await recallMode(pool);
+  if (!mode || mode === 'none') return null;
+  try {
+    await armMode({ pool, databaseUrl, secret, mode });
+    S.restoredOnBoot = true;
+    return mode;
+  } catch (err) {
+    S.mode = 'none';
+    return { error: err.message, mode };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,14 +412,12 @@ function createApp({ pool, databaseUrl, env }) {
       return res.status(400).json({ error: 'mode must be unprotected, protected or correct' });
     }
     try {
-      await stopMerchant();
-      const merchantMode = mode === 'unprotected' ? 'broken' : mode;
-      S.merchant = await startMerchant(merchantMode, databaseUrl, secret, S.merchantPort);
-      S.mode = mode;
-      emit('armed', { mode });
+      S.restarts = [];
+      await armMode({ pool, databaseUrl, secret, mode });
       res.json({ ok: true, mode });
     } catch (err) {
       S.mode = 'none';
+      await rememberMode(pool, 'none');
       res.status(500).json({ error: err.message });
     }
   });
@@ -429,6 +531,7 @@ function createApp({ pool, databaseUrl, env }) {
     out.impact = S.lastImpact;
     out.razorpay = haveRazorpay;
     out.publicUrl = S.publicUrl;
+    out.restoredOnBoot = S.restoredOnBoot;
     res.json(out);
   });
 
@@ -447,4 +550,5 @@ function createApp({ pool, databaseUrl, env }) {
   return app;
 }
 
-module.exports = { createApp, startMerchant, stopMerchant, S, MERCHANT_SCHEMA };
+module.exports = { createApp, startMerchant, stopMerchant, armMode, restoreArmed,
+  rememberMode, recallMode, S, MERCHANT_SCHEMA };

@@ -270,6 +270,10 @@ function renderFeed() {
 async function refreshState() {
   const s = await (await fetch('/api/state')).json();
   setMode(s.mode);
+  if (s.restoredOnBoot && s.mode !== 'none') {
+    $('mode').textContent += ' · restored';
+    $('mode').title = 'This console restarted and put the merchant back as it was.';
+  }
   if (s.deliveries && !deliveries.length) { deliveries = s.deliveries; renderFeed(); }
   $('orders').innerHTML = (s.orders && s.orders.length)
     ? `<div class="scroll"><table><tr><th>order</th><th>status</th><th>credited</th><th>×</th></tr>` +

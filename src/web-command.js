@@ -16,7 +16,8 @@ const path = require('path');
 
 module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
   const { connect, migrate, shutdown } = deps;
-  const { createApp, stopMerchant, S, MERCHANT_SCHEMA } = require(path.join(RAZE, 'src', 'web', 'server'));
+  const { createApp, stopMerchant, restoreArmed, S, MERCHANT_SCHEMA } =
+    require(path.join(RAZE, 'src', 'web', 'server'));
 
   const port = Number(process.env.PORT || flag('port', 7000));
   const { pool, url, embedded } = await connect();
@@ -36,8 +37,21 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
     console.log('  ctrl-c to stop\n');
   });
 
+  // A deploy or a crash restarts this process; whatever was armed before it
+  // should still be armed after. A failure to restore is reported and left
+  // disarmed rather than pretended away.
+  const restored = await restoreArmed({ pool, databaseUrl: url, env });
+  if (restored && restored.error) {
+    console.log(`  could not restore the ${restored.mode} merchant: ${restored.error}`);
+  } else if (restored) {
+    console.log(`  restored       ${restored} merchant re-armed after restart`);
+  }
+
   const stop = async () => {
     server.close();
+    // Tell the exit handler this kill was asked for, so it does not treat the
+    // merchant dying during shutdown as a crash and restart it.
+    S.stopping = true;
     await stopMerchant();
     await shutdown(pool);
     process.exit(0);
