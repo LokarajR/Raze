@@ -892,7 +892,7 @@ function buildServer() {
               at_risk_paise: impact.razorpay.unrecordedPaise,
               orders: impact.razorpay.unrecorded.slice(0, 20),
             }
-          : { unavailable: impact.razorpay.reason };
+          : { unavailable: impact.razorpay.reason, kind: impact.razorpay.kind };
       } else {
         out.razorpay = { unavailable: 'no Razorpay credentials configured' };
       }
@@ -927,10 +927,20 @@ function buildServer() {
       const STALE_AFTER_MS = 15 * 60 * 1000;
       const ageMs = lastSuccess ? Date.now() - new Date(lastSuccess).getTime() : null;
       const reachable = !!(out.razorpay && out.razorpay.unavailable === undefined);
+      // "Cannot read your orders table" is not "cannot reach Razorpay". Sending
+      // a merchant to check their Razorpay account over a column-name mismatch
+      // wastes their time and teaches them to distrust the answer.
+      const localProblem = out.razorpay && out.razorpay.kind === 'local'
+        ? out.razorpay.unavailable : null;
 
       let state;
       let says;
-      if (!reachable) {
+      if (localProblem) {
+        state = 'UNARMED';
+        says = 'I can reach Razorpay, but I cannot read your orders table — ' + localProblem
+          + '. Point me at the right table, or let me read your schema and propose the '
+          + 'mapping.';
+      } else if (!reachable) {
         state = 'BLIND';
         says = 'I cannot reach Razorpay right now, so I do not know whether anything has '
           + 'drifted. This is not the same as everything being fine.';

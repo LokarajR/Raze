@@ -140,6 +140,40 @@
   .tgroup.best{border-color:#2b5546}
   .tgroup>summary{font-size:13px;cursor:pointer;display:flex;gap:9px;align-items:center}
   .tgroup .prop{margin-top:9px}
+
+  .stage.ask{border-color:#2b5546}
+  .statebar{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:14px;
+    border-bottom:1px solid var(--line);padding-bottom:12px}
+  .pill{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;padding:4px 11px;
+    border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+  .pill.good{color:var(--good);border-color:#1e3a2e;background:#0d1a14}
+  .pill.bad{color:var(--bad);border-color:#4a2420;background:#1c0f0d}
+  .pill.warn{color:var(--risk);border-color:#4a3a20;background:#1c150d}
+  .statesays{color:var(--muted);font-size:13px;flex:1;min-width:240px}
+
+  .thread{display:flex;flex-direction:column;gap:12px;max-height:46vh;overflow-y:auto;padding-right:4px}
+  .msg .who{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
+  .msg .what{font-size:14px;line-height:1.55}
+  .msg.you .what{color:var(--ink);background:#16211d;border:1px solid #24332d;
+    border-radius:9px;padding:9px 12px;display:inline-block;max-width:80%}
+  .msg.raze .what{color:var(--ink);max-width:74ch}
+  .msg.warnmsg .what{color:var(--risk)}
+  .dots::after{content:'…';animation:blink 1.2s infinite}
+  @keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+
+  .composer{display:flex;gap:10px;margin-top:14px}
+  .composer input{flex:1}
+  .suggest{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .chip{background:var(--panel2);border:1px solid var(--line);color:var(--muted);
+    border-radius:99px;padding:6px 12px;font-size:12.5px;cursor:pointer}
+  .chip:hover{color:var(--ink);border-color:#2b5546}
+
+  .orderbtn{font-family:var(--mono);font-size:12.5px;background:#16211d;border:1px solid #2b5546;
+    color:var(--cool);border-radius:5px;padding:1px 6px;cursor:pointer}
+  .orderbtn:hover{background:#1d3a30}
+  ul.plan{margin:8px 0;padding-left:18px;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+  .planmeta{font-size:12.5px;color:var(--dim);margin-bottom:10px}
+  .planact{display:flex;gap:9px;align-items:center}
   .hide{display:none}
 </style>
 </head>
@@ -155,6 +189,38 @@
 
 <main>
 <div>
+
+  <!-- ask ---------------------------------------------------------------- -->
+  <section class="stage ask" id="askStage">
+    <h2><span class="num">◆</span> Ask Raze</h2>
+    <div class="body">
+      <div class="statebar" id="stateBar">
+        <span class="pill" id="statePill">checking…</span>
+        <span class="statesays" id="stateSays"></span>
+      </div>
+
+      <div class="thread" id="thread">
+        <div class="msg raze">
+          <div class="who">Raze</div>
+          <div class="what">Ask me anything about your payments. I read your database and
+            Razorpay's records, and I tell you where they disagree. I will never change
+            anything without showing you the plan first.</div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <input id="askInput" placeholder="is everything alright?" autocomplete="off">
+        <button class="primary" id="askBtn">Ask</button>
+      </div>
+
+      <div class="suggest">
+        <button class="chip" data-q="is everything alright?">is everything alright?</button>
+        <button class="chip" data-q="which payments are we missing, and how much money is that?">what are we missing?</button>
+        <button class="chip" data-q="read my schema and tell me which table holds my orders">read my schema</button>
+        <button class="chip" data-q="is my integration safe from duplicate deliveries?">am I safe from duplicates?</button>
+      </div>
+    </div>
+  </section>
 
   <!-- C1 --------------------------------------------------------------- -->
   <section class="stage" id="connectStage">
@@ -704,6 +770,134 @@ $('checkBtn').onclick = async (e) => {
     refreshState();
   } finally { b.disabled = false; b.textContent = 'Check my payment protection'; }
 };
+
+// ---- Ask Raze --------------------------------------------------------------
+//
+// The banner state is computed, never generated: it comes from raze_status, so
+// what the merchant reads at the top of the page cannot be a hallucination. The
+// model writes the prose underneath it and holds no tool that can change
+// anything.
+
+const STATE_TONE = {
+  PROTECTED: 'good', DIVERGED: 'bad', STALE: 'warn', UNARMED: 'warn', BLIND: 'warn',
+};
+
+async function refreshAgentState() {
+  try {
+    const s = await (await fetch('/api/agent/state')).json();
+    const pill = $('statePill');
+    pill.textContent = s.state || 'unknown';
+    pill.className = 'pill ' + (STATE_TONE[s.state] || '');
+    $('stateSays').textContent = s.says || '';
+    return s;
+  } catch {
+    $('statePill').textContent = 'unreachable';
+    $('statePill').className = 'pill warn';
+  }
+}
+
+function bubble(who, html, cls) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + (cls || who.toLowerCase());
+  el.innerHTML = `<div class="who">${esc(who)}</div><div class="what">${html}</div>`;
+  $('thread').appendChild(el);
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  return el;
+}
+
+// An order id in the answer becomes a button, because the next thing a merchant
+// wants after being told an order is stuck is to do something about it.
+function linkOrders(text) {
+  return esc(text).replace(/\b(order_[A-Za-z0-9]+)\b/g,
+    '<button class="orderbtn" data-order="$1">$1</button>');
+}
+
+async function askRaze(question) {
+  if (!question.trim()) return;
+  bubble('You', esc(question));
+  $('askInput').value = '';
+  const thinking = bubble('Raze', '<span class="dots">thinking</span>');
+  $('askBtn').disabled = true;
+  try {
+    const r = await fetch('/api/agent/ask', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    const d = await r.json();
+    thinking.querySelector('.what').innerHTML = linkOrders(d.text || 'No answer came back.');
+    if (!d.ok) thinking.classList.add('warnmsg');
+    refreshAgentState();
+  } catch (err) {
+    thinking.querySelector('.what').textContent = 'I could not answer: ' + err.message;
+  } finally { $('askBtn').disabled = false; }
+}
+
+$('askBtn').onclick = () => askRaze($('askInput').value);
+$('askInput').onkeydown = (e) => { if (e.key === 'Enter') askRaze($('askInput').value); };
+document.querySelectorAll('.chip').forEach((c) => {
+  c.onclick = () => askRaze(c.dataset.q);
+});
+
+// ---- recovery: the model proposes nothing here; the merchant clicks --------
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.orderbtn');
+  if (!btn) return;
+  const order = btn.dataset.order;
+  bubble('You', 'recover ' + esc(order));
+  const pending = bubble('Raze', '<span class="dots">working out what that would change</span>');
+  try {
+    const plan = await (await fetch('/api/agent/propose', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order_id: order }),
+    })).json();
+
+    if (plan.error) {
+      pending.querySelector('.what').innerHTML = `<span class="errtext">${esc(plan.error)}</span>`;
+      return;
+    }
+    pending.querySelector('.what').innerHTML =
+      `Here is what I would do to <b>${esc(order)}</b>:` +
+      `<ul class="plan">${plan.plan.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>` +
+      `<div class="planmeta">Razorpay payment <code>${esc(plan.payment.id)}</code>, ` +
+      `₹${(plan.payment.amount_paise / 100).toFixed(2)}, ${esc(plan.payment.status)}. ` +
+      `Nothing else changes.</div>` +
+      `<div class="planact"><button class="primary approve" data-order="${esc(order)}" ` +
+      `data-token="${esc(plan.approval_token)}">Approve</button>` +
+      `<button class="cancel">Leave it</button></div>`;
+  } catch (err) {
+    pending.querySelector('.what').textContent = 'I could not work that out: ' + err.message;
+  }
+});
+
+document.addEventListener('click', async (e) => {
+  if (e.target.classList.contains('cancel')) {
+    e.target.closest('.planact').innerHTML = '<span class="note">Left alone.</span>';
+    return;
+  }
+  const ok = e.target.closest('.approve');
+  if (!ok) return;
+  const act = ok.closest('.planact');
+  act.innerHTML = '<span class="note">applying…</span>';
+  try {
+    const d = await (await fetch('/api/agent/apply', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order_id: ok.dataset.order, approval_token: ok.dataset.token }),
+    })).json();
+    if (d.error) {
+      act.innerHTML = `<span class="errtext">${esc(d.error)}</span>`;
+      return;
+    }
+    act.innerHTML = `<span class="oktext">Done. ${esc(ok.dataset.order)} is paid, ` +
+      `₹${(d.merchant_now.credited_paise / 100).toFixed(2)}.</span>`;
+    refreshAgentState();
+    refreshState();
+  } catch (err) {
+    act.innerHTML = `<span class="errtext">${esc(err.message)}</span>`;
+  }
+});
+
+refreshAgentState();
+setInterval(refreshAgentState, 60000);
 
 refreshState();
 </script>

@@ -800,6 +800,59 @@ function createApp({ pool, databaseUrl, env }) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // -------------------------------------------------------------------------
+  // the conversation
+  // -------------------------------------------------------------------------
+  //
+  // The model answers questions. It cannot repair anything, because the tools
+  // that repair are not in the process it runs in. Repair happens below, in
+  // this process, and only after a human has clicked.
+
+  const agent = require(path.join(RAZE, 'src', 'web', 'agent'));
+  const tools = agent.createToolClient();
+
+  app.post('/api/agent/ask', async (req, res) => {
+    const question = String(req.body.question || '').trim();
+    if (!question) return res.status(400).json({ error: 'ask something' });
+    emit('agent-thinking', { question });
+    const answer = await agent.ask(question);
+    emit('agent-answer', { ok: answer.ok });
+    res.json(answer);
+  });
+
+  // A snapshot the page can render without waiting on the model — the five
+  // states are computed, not generated, so the banner is never a hallucination.
+  app.get('/api/agent/state', async (_req, res) => {
+    try {
+      const out = await tools.call('raze_status', {});
+      res.json(out);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/agent/propose', async (req, res) => {
+    const orderId = String(req.body.order_id || '').trim();
+    if (!orderId) return res.status(400).json({ error: 'which order?' });
+    try {
+      const out = await tools.call('raze_propose_recovery', { order_id: orderId });
+      res.json(out);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/agent/apply', async (req, res) => {
+    const orderId = String(req.body.order_id || '').trim();
+    const token = String(req.body.approval_token || '').trim();
+    if (!orderId || !token) return res.status(400).json({ error: 'order and approval are both required' });
+    try {
+      // Same long-lived process that issued the token, or the approval it
+      // refers to would not exist.
+      const out = await tools.call('raze_apply_recovery', {
+        order_id: orderId, approval_token: token,
+      });
+      emit('recovered', { order_id: orderId, ok: !out.error });
+      res.json(out);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   app.get('/api/state', async (_req, res) => {
     const out = { mode: S.mode, deliveries: S.deliveries.slice(0, 60), scans: S.scans };
     try {

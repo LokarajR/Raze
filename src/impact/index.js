@@ -100,7 +100,7 @@ function fromProbes(results) {
  */
 async function fromRazorpay({ pool, razorpay, table = 'shop_orders', windowHours = 72 }) {
   if (!razorpay || !razorpay.keyId || !razorpay.keySecret) {
-    return { available: false, reason: 'no Razorpay credentials configured' };
+    return { available: false, kind: 'provider', reason: 'no Razorpay credentials configured' };
   }
   const to = Math.floor(Date.now() / 1000);
   const from = to - windowHours * 3600;
@@ -113,10 +113,13 @@ async function fromRazorpay({ pool, razorpay, table = 'shop_orders', windowHours
       { headers: { authorization: auth } }
     );
     const body = await res.json();
-    if (!res.ok) return { available: false, reason: body.error?.description || `HTTP ${res.status}` };
+    if (!res.ok) {
+      return { available: false, kind: 'provider',
+        reason: body.error?.description || `HTTP ${res.status}` };
+    }
     items = body.items || [];
   } catch (err) {
-    return { available: false, reason: err.message };
+    return { available: false, kind: 'provider', reason: err.message };
   }
 
   // Only settled money counts. A refunded payment was still captured — the
@@ -127,8 +130,14 @@ async function fromRazorpay({ pool, razorpay, table = 'shop_orders', windowHours
   try {
     const r = await pool.query(`SELECT order_id, status, credited_paise FROM "${table}"`);
     local = new Map(r.rows.map((x) => [x.order_id, x]));
-  } catch {
-    return { available: false, reason: `cannot read table "${table}"` };
+  } catch (err) {
+    // Razorpay answered. It is the merchant's own table that cannot be read —
+    // a different problem with a different fix, and reporting it as "cannot
+    // reach Razorpay" would send them to look in the wrong place.
+    return {
+      available: false, kind: 'local',
+      reason: `cannot read "${table}": ${err.message}`,
+    };
   }
 
   const missing = [];
