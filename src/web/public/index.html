@@ -94,6 +94,11 @@
     border-radius:99px;padding:5px 12px;font-size:12.5px;cursor:pointer}
   .chip:hover{color:var(--ink);border-color:#2b5546}
   .disclaim{font-size:11.5px;color:var(--dim);margin-top:9px;text-align:center}
+  table.decided{width:100%;border-collapse:collapse;margin-bottom:13px}
+  table.decided td{padding:7px 0;border-bottom:1px solid #16201c;vertical-align:top}
+  table.decided tr:last-child td{border-bottom:none}
+  td.mk{color:var(--muted);font-size:12.5px;width:44%}
+  td.mv{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
   .hide{display:none !important}
 </style>
 </head>
@@ -197,7 +202,7 @@ function actionCard(step){
     + (step.note?'<div class="note">'+esc(step.note)+'</div>':'')+'<div id="e"></div>');
   c.querySelector('#go').onclick=async(e)=>{
     e.target.disabled=true; e.target.textContent='Working…';
-    const d=await post('/api/ray/act',{step:step.id,values:{}});
+    const d=await post('/api/ray/act',{step:step.id,values:step.values||{}});
     if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
       e.target.disabled=false; e.target.textContent=step.action; return; }
     settle(c,d);
@@ -211,22 +216,34 @@ function actionCard(step){
 function mappingCard(step){
   if(step.mapping){
     const m=step.mapping;
+    const row=(k,v)=>'<tr><td class="mk">'+esc(k)+'</td><td class="mv">'+esc(v||'—')+'</td></tr>';
     const c=card(
-      '<div class="map">match on <b>'+esc(m.table)+'.'+esc(m.key)+'</b> ← the Razorpay order id<br>'
-      + Object.keys(m.set||{}).map(k=>'set <b>'+esc(k)+'</b> = paid').join('<br>')
-      + (Object.keys(m.add||{}).length?'<br>'+Object.keys(m.add).map(k=>'add the amount to <b>'+esc(k)+'</b>').join('<br>'):'')
-      + (m.guard?'<br>refuse if <b>'+esc(m.guard.column)+'</b> is already refunded':'')
-      + '</div>'
+      '<table class="decided">'
+      + row('table', m.table) + row('Razorpay order id', m.key)
+      + row('status', m.status) + row('credited to', m.credited)
+      + row('should cost', m.expected)
+      + '</table>'
       + '<div class="actions"><button class="primary" id="yes">'+esc(step.action)+'</button>'
       + '<button class="ghost" id="no">'+esc(step.alt)+'</button></div>'
       + (step.note?'<div class="note">'+esc(step.note)+'</div>':'')+'<div id="e"></div>');
-    c.querySelector('#yes').onclick=()=>askAmount(c,m.table,{key:m.key,
-      status:Object.keys(m.set||{})[0], credited:Object.keys(m.add||{})[0]});
+
+    c.querySelector('#yes').onclick=async(e)=>{
+      e.target.disabled=true; e.target.textContent='Checking against your database…';
+      const d=await post('/api/ray/act',{step:'mapping',values:{
+        table:m.table,key:m.key,status:m.status,credited:m.credited,expected:m.expected}});
+      if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
+        e.target.disabled=false; e.target.textContent=step.action; return; }
+      settle(c,d);
+      if(d.integration) integrationCard(d.integration);
+      advance();
+    };
     c.querySelector('#no').onclick=()=>{ c.innerHTML=''; statePicker(c,[m.table]); };
     return;
   }
   const c=card('<div id="pick"></div>');
-  statePicker(c.querySelector('#pick'), step.pick.tables);
+  if(step.modelFailed) turn('Raze', md("I could not work it out from your schema on my own: "
+    + step.modelFailed + " I will not guess at which column marks an order paid, so tell me."));
+  statePicker(c.querySelector('#pick'), (step.pick&&step.pick.tables)||[]);
 }
 
 async function statePicker(host, tables){

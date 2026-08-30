@@ -968,6 +968,7 @@ function createApp({ pool, databaseUrl, env }) {
         refund_policy TEXT,
         expected_column TEXT,
         expected_column_absent BOOLEAN,
+        webhook_ok BOOLEAN NOT NULL DEFAULT false,
         backfill_at TIMESTAMPTZ,
         backfill_checked INT,
         backfill_missing INT,
@@ -980,6 +981,7 @@ function createApp({ pool, databaseUrl, env }) {
       for (const [col, type] of [
         ['expected_column', 'TEXT'],
         ['expected_column_absent', 'BOOLEAN'],
+        ['webhook_ok', 'BOOLEAN'],
       ]) {
         await pool.query(`ALTER TABLE raze_setup ADD COLUMN IF NOT EXISTS "${col}" ${type}`);
       }
@@ -1108,9 +1110,72 @@ function createApp({ pool, databaseUrl, env }) {
       const state = await setupState();
       const step = ray.nextStep(state);
 
+      // Where Razorpay should deliver. The merchant is never asked for a URL:
+      // Raze knows its own endpoint, and if one is already registered against
+      // this account it adopts that rather than adding a duplicate.
+      if (step.id === 'webhook') {
+        const rz = CONNECT.razorpay || razorpay;
+        const auth = 'Basic ' + Buffer.from(rz.keyId + ':' + rz.keySecret).toString('base64');
+        let existing = [];
+        try {
+          const r = await fetch('https://api.razorpay.com/v1/webhooks',
+            { headers: { authorization: auth } });
+          existing = ((await r.json()).items || []).filter((w) => w.active);
+        } catch {}
+        const mine = existing.find((w) => String(w.url).endsWith('/webhook'));
+        const publicUrl = S.publicUrl || process.env.RAZE_PUBLIC_URL || null;
+
+        if (mine) {
+          step.say = 'You already have a webhook pointing at `' + mine.url + '`, so I will '
+            + 'use that rather than adding another. Nothing for you to do here.';
+          step.action = 'Use it';
+          step.values = { adopt: mine.id };
+        } else if (publicUrl) {
+          step.say = 'Razorpay needs somewhere to send payment events. I will register `'
+            + publicUrl + '/webhook` against your account, generate the signing secret '
+            + 'myself, and read the registration back to confirm it exists.';
+          step.action = 'Set it up';
+          step.values = {};
+        } else {
+          step.say = "Razorpay needs a public HTTPS address to deliver to, and I am running "
+            + "on your machine where it cannot reach me. That is not blocking: I recover "
+            + "payments by asking Razorpay what it recorded, which is what catches anything "
+            + "a webhook would have missed anyway.";
+          step.action = 'Continue without one';
+          step.values = { skip: true };
+        }
+        step.note = 'You do not need to open the Razorpay dashboard.';
+      }
+
       // The mapping step is the only one whose content depends on what was
       // found in the merchant's database rather than on what they have answered.
       if (step.id === 'mapping') {
+        // The agent reads the schema itself. Name matching only ever worked on
+        // schemas that happened to use Raze's own words, and a real store's
+        // columns are named for the store.
+        if (!CONNECT.understood) {
+          const { understand } = require(path.join(RAZE, 'src', 'agent', 'understand'));
+          try { CONNECT.understood = await understand(CONNECT.merchantPool || pool); }
+          catch (err) { CONNECT.understood = { ok: false, why: err.message }; }
+        }
+        const u = CONNECT.understood;
+        if (u && u.ok) {
+          const c = u.claim;
+          step.say = 'I read your schema. ' + c.reasoning;
+          step.mapping = {
+            table: c.table, key: c.key, status: c.status,
+            credited: c.credited, expected: c.expected,
+          };
+          step.action = 'That is right — set it up';
+          step.alt = 'Let me correct it';
+          step.note = c.expected
+            ? 'Every payment gets checked against ' + c.expected + ' before I touch an order.'
+            : 'Your schema records no separate expected amount, so I will report divergence '
+              + 'but never repair unattended — there would be nothing to check against.';
+          return res.json({ step, state });
+        }
+        step.modelFailed = u ? u.why : null;
+
         const proposals = CONNECT.proposals || [];
         const best = CONNECT.bestTable;
         if (best && proposals.length) {
@@ -1218,6 +1283,49 @@ function createApp({ pool, databaseUrl, env }) {
           columns: r.rows.map((c) => c.column_name),
           numeric: r.rows.filter((c) => /int|numeric|decimal|money|real|double/i.test(c.data_type))
             .map((c) => c.column_name),
+        });
+      }
+
+      // ---- where Razorpay delivers, arranged by Raze ------------------------
+      if (step === 'webhook') {
+        const rz = CONNECT.razorpay || razorpay;
+        const auth = 'Basic ' + Buffer.from(rz.keyId + ':' + rz.keySecret).toString('base64');
+
+        if (values.adopt) {
+          await saveSetup({ webhook_ok: true, webhook_id: String(values.adopt) });
+          return res.json({ ok: true, confirm: 'Using the webhook already on your account',
+            detail: 'no duplicate registered' });
+        }
+        if (values.skip) {
+          await saveSetup({ webhook_ok: true });
+          return res.json({ ok: true, confirm: 'Continuing without a webhook',
+            detail: 'I will ask Razorpay directly rather than waiting to be told' });
+        }
+
+        const publicUrl = S.publicUrl || process.env.RAZE_PUBLIC_URL;
+        const secret = crypto.randomBytes(24).toString('hex');
+        const r = await fetch('https://api.razorpay.com/v1/webhooks', {
+          method: 'POST',
+          headers: { authorization: auth, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            url: publicUrl + '/webhook', secret,
+            events: { 'payment.authorized': true, 'payment.captured': true,
+              'payment.failed': true, 'order.paid': true, 'refund.created': true },
+          }),
+        });
+        const body = await r.json();
+        if (!r.ok) {
+          return res.json({ error: (body.error && body.error.description) || 'HTTP ' + r.status });
+        }
+        const back = await fetch('https://api.razorpay.com/v1/webhooks',
+          { headers: { authorization: auth } });
+        const live = ((await back.json()).items || []).some((w) => w.id === body.id && w.active);
+        CONNECT.webhookSecret = secret;
+        await saveSetup({ webhook_ok: true, webhook_id: body.id });
+        return res.json({
+          ok: true,
+          confirm: live ? 'Webhook registered and confirmed by Razorpay' : 'Webhook registered',
+          detail: body.url + ' — five events, secret generated here and never shown',
         });
       }
 

@@ -63,6 +63,10 @@ function nextStep(state) {
     };
   }
 
+  if (!state.webhook_ok) {
+    return { id: 'webhook', say: null, dynamic: true };
+  }
+
   if (!state.mapping_confirmed) {
     return { id: 'mapping', say: null, dynamic: true };
   }
