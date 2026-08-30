@@ -98,7 +98,13 @@ function fromProbes(results) {
  * their own logs: payments Razorpay captured that never became business state.
  * Their webhook returned 200 for every one of them.
  */
-async function fromRazorpay({ pool, razorpay, table = 'shop_orders', windowHours = 72 }) {
+async function fromRazorpay({
+  pool, razorpay, table = 'shop_orders', windowHours = 72,
+  // A merchant's columns are theirs, not ours. Hardcoding order_id and
+  // credited_paise made every real schema look unreadable, and "unreadable"
+  // was then reported as if Razorpay were down.
+  keyColumn = 'order_id', amountColumn = 'credited_paise',
+} = {}) {
   if (!razorpay || !razorpay.keyId || !razorpay.keySecret) {
     return { available: false, kind: 'provider', reason: 'no Razorpay credentials configured' };
   }
@@ -128,8 +134,9 @@ async function fromRazorpay({ pool, razorpay, table = 'shop_orders', windowHours
 
   let local = new Map();
   try {
-    const r = await pool.query(`SELECT order_id, status, credited_paise FROM "${table}"`);
-    local = new Map(r.rows.map((x) => [x.order_id, x]));
+    const r = await pool.query(
+      `SELECT "${keyColumn}" AS key, "${amountColumn}" AS amount FROM "${table}"`);
+    local = new Map(r.rows.map((x) => [x.key, x]));
   } catch (err) {
     // Razorpay answered. It is the merchant's own table that cannot be read —
     // a different problem with a different fix, and reporting it as "cannot
@@ -144,7 +151,7 @@ async function fromRazorpay({ pool, razorpay, table = 'shop_orders', windowHours
   for (const p of settled) {
     if (!p.order_id) continue;
     const row = local.get(p.order_id);
-    const applied = row && Number(row.credited_paise) > 0;
+    const applied = row && Number(row.amount) > 0;
     if (!applied) missing.push({ id: p.id, order_id: p.order_id, amount: p.amount, status: p.status });
   }
 
@@ -265,9 +272,10 @@ function project({ monthlyTransactions, averageOrderValueRupees, retryRatePercen
   };
 }
 
-async function computeImpact({ pool, razorpay, results, table, volume }) {
+async function computeImpact({ pool, razorpay, results, table, volume,
+  keyColumn, amountColumn }) {
   const probes = fromProbes(results);
-  const live = await fromRazorpay({ pool, razorpay, table });
+  const live = await fromRazorpay({ pool, razorpay, table, keyColumn, amountColumn });
   const expectations = await abandonment(pool);
 
   const examined = (results || []).length;

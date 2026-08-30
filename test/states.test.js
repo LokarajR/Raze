@@ -159,6 +159,31 @@ async function main() {
     }
   }
 
+  // ---- each failing dependency names its own system ----------------------
+  // Collapsing these is what sends a merchant to check the wrong thing. A
+  // renamed column must never read as "Razorpay is down".
+  const disconnected = await statusWith({
+    ...withKeys, DATABASE_URL: 'postgres://raze:raze@127.0.0.1:1/postgres',
+  });
+  check('an unreachable database reports DISCONNECTED, not BLIND',
+    disconnected.state === 'DISCONNECTED', `got ${disconnected.state}`);
+  check('DISCONNECTED sends them to the database, not to Razorpay',
+    /database/i.test(disconnected.says || '') && !/reach Razorpay/i.test(disconnected.says || ''),
+    disconnected.says);
+
+  if (env.RAZORPAY_KEY_ID) {
+    const mismatched = await statusWith({
+      ...withKeys, RAZE_ORDERS_TABLE: 'state_orders',
+      RAZE_ORDER_KEY_COLUMN: 'a_column_that_does_not_exist',
+    });
+    check('a mapping that does not fit the schema reports MISMATCHED, not BLIND',
+      mismatched.state === 'MISMATCHED', `got ${mismatched.state}`);
+    check('MISMATCHED says both systems are fine and names the schema',
+      /schema|does not match/i.test(mismatched.says || ''), mismatched.says);
+  } else {
+    console.log('  SKIP  MISMATCHED — no Razorpay credentials');
+  }
+
   await pool.query('DROP TABLE IF EXISTS state_orders');
   await pool.query('TRUNCATE raze_expectations');
   await shutdown(pool);

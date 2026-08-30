@@ -72,6 +72,8 @@ const env = process.env;
 const razorpay = { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET };
 const haveRazorpay = !!(razorpay.keyId && razorpay.keySecret);
 const ORDERS_TABLE = env.RAZE_ORDERS_TABLE || 'shop_orders';
+const KEY_COLUMN = env.RAZE_ORDER_KEY_COLUMN || 'order_id';
+const AMOUNT_COLUMN = env.RAZE_AMOUNT_COLUMN || 'credited_paise';
 
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 const fail = (message, extra = {}) => ({
@@ -130,6 +132,42 @@ function takePlan(token) {
  * compared; a tool that merged them would hide exactly the divergence a merchant
  * needs to see.
  */
+/**
+ * The merchant's own column names, worked out from their schema.
+ *
+ * Everything user-facing has to speak their vocabulary: the row Raze reads back,
+ * and the plan it shows before changing anything. Hardcoding the demo
+ * merchant's names made a successful repair report itself as a failure, and
+ * showed the merchant a plan naming columns their database does not have.
+ *
+ * Derived once from the same inference that produced the mapping, so the words
+ * in the plan and the columns in the write cannot drift apart.
+ */
+let columnsCache = null;
+async function merchantColumns(pool) {
+  if (columnsCache) return columnsCache;
+  const fallback = {
+    key: KEY_COLUMN, amount: AMOUNT_COLUMN,
+    status: env.RAZE_STATUS_COLUMN || 'status', count: null,
+  };
+  try {
+    const infer = require(path.join(RAZE, 'src', 'infer'));
+    const { proposals } = await infer.infer({ pool, corpusPath: LOG });
+    const p = proposals.find(
+      (x) => x.eventType === 'payment.captured' && x.spec.table === ORDERS_TABLE);
+    if (!p) return (columnsCache = fallback);
+    const setCols = Object.keys(p.spec.set || {});
+    const addCols = Object.keys(p.spec.add || {});
+    columnsCache = {
+      key: p.spec.key.column,
+      status: setCols[0] || fallback.status,
+      amount: addCols.find((c) => /paise|amount|total/i.test(c)) || fallback.amount,
+      count: addCols.find((c) => /count/i.test(c)) || null,
+    };
+    return columnsCache;
+  } catch { return (columnsCache = fallback); }
+}
+
 async function orderTrail(orderId) {
   const pool = await db();
   const out = { order_id: orderId };
@@ -193,15 +231,20 @@ async function orderTrail(orderId) {
 
   // 4. the merchant's own row
   try {
+    const c = await merchantColumns(pool);
+    const cols = [`"${c.status}" AS status`, `"${c.amount}" AS credited_paise`];
+    if (c.count) cols.push(`"${c.count}" AS credit_count`);
     const m = await pool.query(
-      `SELECT status, credited_paise, credit_count FROM "${ORDERS_TABLE}" WHERE order_id = $1`,
+      `SELECT ${cols.join(', ')} FROM "${ORDERS_TABLE}" WHERE "${c.key}" = $1`,
       [orderId]
     );
     out.merchant = m.rows[0]
       ? {
           status: m.rows[0].status,
           credited_paise: Number(m.rows[0].credited_paise),
-          credit_count: Number(m.rows[0].credit_count),
+          credit_count: m.rows[0].credit_count === undefined
+            ? null : Number(m.rows[0].credit_count),
+          columns: c,
         }
       : null;
   } catch (err) { out.merchant = { unavailable: err.message }; }
@@ -407,7 +450,8 @@ function buildServer() {
     if (!haveRazorpay) return fail('no Razorpay credentials configured (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)');
     try {
       const pool = await db();
-      const impact = await computeImpact({ pool, razorpay, results: [], table: ORDERS_TABLE });
+      const impact = await computeImpact({ pool, razorpay, results: [], table: ORDERS_TABLE,
+          keyColumn: KEY_COLUMN, amountColumn: AMOUNT_COLUMN });
       const rz = impact.razorpay;
       if (!rz.available) return fail(rz.reason);
       return ok({
@@ -473,11 +517,12 @@ function buildServer() {
           { order_id, merchant: trail.merchant });
       }
       const payment = trail.razorpay.payments.find((p) => p.status === 'captured' || p.status === 'refunded');
+      const cols = await merchantColumns(await db());
       const steps = [
-        `set ${ORDERS_TABLE}.status = 'paid' for order ${order_id}`,
-        `set credited_paise = ${payment.amount} (from Razorpay payment ${payment.id})`,
-        'set credit_count = 1',
-        'record the transition in raze_subject_state so a later delivery cannot re-apply it',
+        `set ${ORDERS_TABLE}.${cols.status} = 'paid' for order ${order_id}`,
+        `set ${cols.amount} = ${payment.amount} (from Razorpay payment ${payment.id})`,
+        ...(cols.count ? [`set ${cols.count} = 1`] : []),
+        'record the transition so a later delivery of the same event cannot re-apply it',
       ];
       // Bound to the state it was derived from. If anything moves, the approval
       // no longer describes reality and must not be honoured.
@@ -578,13 +623,22 @@ function buildServer() {
       const rz = raze.create({ db: pool, webhookSecret: resolveDemoSecret(env).secret });
       const mapping = require(path.join(RAZE, 'src', 'mapping'));
       const m = mapping.attach(rz, pool);
-      await m.map('payment.captured', {
-        table: ORDERS_TABLE,
-        key: { column: 'order_id', from: 'payload.payment.entity.order_id' },
-        set: { status: { literal: 'paid' } },
-        add: { credited_paise: 'payload.payment.entity.amount', credit_count: { literal: 1 } },
-        guard: { column: 'status', notIn: ['refunded'] },
-      });
+
+      // The mapping is derived from the merchant's own schema, never assumed.
+      // A hardcoded one wrote columns that exist in the demo merchant and in
+      // almost nobody else's database — so the repair would have written
+      // nothing, or the wrong thing, for every real merchant.
+      const infer = require(path.join(RAZE, 'src', 'infer'));
+      const proposals = (await infer.infer({ pool, corpusPath: LOG })).proposals;
+      const spec = proposals.find(
+        (pr) => pr.eventType === 'payment.captured' && pr.spec.table === ORDERS_TABLE);
+      if (!spec) {
+        return fail(
+          `I cannot work out how to write "${ORDERS_TABLE}" from a captured payment, so I `
+          + 'will not guess. Run raze_propose_mapping and confirm the mapping first.',
+          { table: ORDERS_TABLE });
+      }
+      await m.map('payment.captured', spec.spec);
       await rz.drain();
 
       PENDING.delete(approval_token);
@@ -821,8 +875,8 @@ function buildServer() {
     try {
       const pool = await db();
       const r = await pool.query(
-        `SELECT o.order_id FROM "${ORDERS_TABLE}" o
-           LEFT JOIN raze_expectations e ON e.subject_id = o.order_id
+        `SELECT o."${KEY_COLUMN}" AS order_id FROM "${ORDERS_TABLE}" o
+           LEFT JOIN raze_expectations e ON e.subject_id = o."${KEY_COLUMN}"
           WHERE e.subject_id IS NULL
           LIMIT $1`,
         [limit]
@@ -856,8 +910,22 @@ function buildServer() {
       + 'everything alright".',
     inputSchema: {},
   }, async () => {
+    // A database that cannot be reached must still produce a state. Throwing
+    // here handed the merchant a stack trace instead of "look at your
+    // database", which is the whole point of telling the dependencies apart.
+    let pool;
+    try { pool = await db(); await pool.query('SELECT 1'); }
+    catch (err) {
+      return ok({
+        state: 'DISCONNECTED',
+        says: 'I cannot reach your database, so I cannot see your orders at all. Nothing '
+          + 'is being checked. (' + err.message + ')',
+        last_successful_check: null,
+        next: 'the database is the thing to look at, not Razorpay',
+      });
+    }
+
     try {
-      const pool = await db();
       const out = {};
 
       try {
@@ -884,7 +952,8 @@ function buildServer() {
 
       if (haveRazorpay) {
         const { computeImpact } = require(path.join(RAZE, 'src', 'impact'));
-        const impact = await computeImpact({ pool, razorpay, results: [], table: ORDERS_TABLE });
+        const impact = await computeImpact({ pool, razorpay, results: [], table: ORDERS_TABLE,
+          keyColumn: KEY_COLUMN, amountColumn: AMOUNT_COLUMN });
         out.razorpay = impact.razorpay.available
           ? {
               captured: impact.razorpay.capturedCount,
@@ -926,20 +995,33 @@ function buildServer() {
 
       const STALE_AFTER_MS = 15 * 60 * 1000;
       const ageMs = lastSuccess ? Date.now() - new Date(lastSuccess).getTime() : null;
+      // Three dependencies can fail, and they are three different rooms to go
+      // and look in: Razorpay, the merchant's database, and whether the mapping
+      // still fits their schema. Collapsing them into one "blind" is what sent
+      // a merchant to check their Razorpay account over a column-name mismatch.
+      // Every failure state below names which one, and only which one.
       const reachable = !!(out.razorpay && out.razorpay.unavailable === undefined);
-      // "Cannot read your orders table" is not "cannot reach Razorpay". Sending
-      // a merchant to check their Razorpay account over a column-name mismatch
-      // wastes their time and teaches them to distrust the answer.
       const localProblem = out.razorpay && out.razorpay.kind === 'local'
         ? out.razorpay.unavailable : null;
 
+      // Is the database reachable at all, separately from whether the mapping
+      // fits it? A dead database and a renamed column are not the same problem.
+      let dbReachable = true;
+      let dbWhy = null;
+      try { await pool.query('SELECT 1'); }
+      catch (err) { dbReachable = false; dbWhy = err.message; }
+
       let state;
       let says;
-      if (localProblem) {
-        state = 'UNARMED';
-        says = 'I can reach Razorpay, but I cannot read your orders table — ' + localProblem
-          + '. Point me at the right table, or let me read your schema and propose the '
-          + 'mapping.';
+      if (!dbReachable) {
+        state = 'DISCONNECTED';
+        says = 'I cannot reach your database, so I cannot see your orders at all. Nothing '
+          + 'is being checked. (' + dbWhy + ')';
+      } else if (localProblem) {
+        state = 'MISMATCHED';
+        says = 'Your database is fine and Razorpay is fine, but the way I am reading your '
+          + 'orders does not match your schema — ' + localProblem + '. Nothing I say about '
+          + 'your money would be trustworthy until that is fixed.';
       } else if (!reachable) {
         state = 'BLIND';
         says = 'I cannot reach Razorpay right now, so I do not know whether anything has '
@@ -973,9 +1055,13 @@ function buildServer() {
         ? 'raze_explain_order on any order above, then raze_propose_recovery'
         : state === 'UNARMED'
           ? 'raze_propose_mapping, then raze_watch_orders once the merchant approves'
-          : state === 'STALE' || state === 'BLIND'
-            ? 'run reconciliation before telling the merchant anything is fine'
-            : 'nothing to do';
+          : state === 'MISMATCHED'
+            ? 'raze_propose_mapping to see which table and columns actually fit'
+            : state === 'DISCONNECTED'
+              ? 'the database is the thing to look at, not Razorpay'
+              : state === 'STALE' || state === 'BLIND'
+                ? 'run reconciliation before telling the merchant anything is fine'
+                : 'nothing to do';
       return ok(out);
     } catch (err) { return fail(err.message); }
   });
