@@ -319,6 +319,7 @@ function createApp({ pool, databaseUrl, env }) {
   const haveRazorpay = !!(razorpay.keyId && razorpay.keySecret);
 
   app.use('/ui', express.static(path.join(__dirname, 'public')));
+  // One surface: the merchant's. Setup until it is done, then what Raze did.
   app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
   app.get('/health', (_req, res) => res.json({ ok: true, mode: S.mode }));
 
@@ -851,6 +852,130 @@ function createApp({ pool, databaseUrl, env }) {
       emit('recovered', { order_id: orderId, ok: !out.error });
       res.json(out);
     } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+
+  // -------------------------------------------------------------------------
+  // setup state, and what Raze has been doing
+  // -------------------------------------------------------------------------
+
+  /**
+   * Setup is not complete until a backfill has returned a real number.
+   *
+   * Kept in Postgres rather than in memory for the same reason the armed mode
+   * is: a merchant who finished setup yesterday should not be asked to do it
+   * again because the process restarted.
+   */
+  async function setupState() {
+    try {
+      await pool.query(`CREATE TABLE IF NOT EXISTS raze_setup (
+        id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        razorpay_ok BOOLEAN NOT NULL DEFAULT false,
+        webhook_id TEXT,
+        database_ok BOOLEAN NOT NULL DEFAULT false,
+        mapping_confirmed BOOLEAN NOT NULL DEFAULT false,
+        escalate_only BOOLEAN,
+        refund_policy TEXT,
+        backfill_at TIMESTAMPTZ,
+        backfill_checked INT,
+        backfill_missing INT,
+        backfill_paise BIGINT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+      const r = await pool.query('SELECT * FROM raze_setup WHERE id = 1');
+      const row = r.rows[0] || {};
+      return {
+        ...row,
+        // The gate. A promise is not a completed setup; a number is.
+        complete: !!row.backfill_at && !!row.mapping_confirmed,
+      };
+    } catch (err) { return { complete: false, error: err.message }; }
+  }
+
+  async function saveSetup(patch) {
+    await setupState();
+    const keys = Object.keys(patch);
+    if (!keys.length) return;
+    const cols = keys.map((k, i) => `"${k}" = $${i + 1}`).join(', ');
+    await pool.query(
+      `INSERT INTO raze_setup (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+    await pool.query(
+      `UPDATE raze_setup SET ${cols}, updated_at = now() WHERE id = 1`,
+      keys.map((k) => patch[k]));
+  }
+
+  app.get('/api/setup', async (_req, res) => res.json(await setupState()));
+
+  // The two questions that cannot be inferred from a schema.
+  app.post('/api/setup/answers', localOnly, async (req, res) => {
+    try {
+      const patch = {};
+      if (req.body.escalate_only !== undefined) patch.escalate_only = !!req.body.escalate_only;
+      if (req.body.refund_policy) patch.refund_policy = String(req.body.refund_policy);
+      if (req.body.mapping_confirmed !== undefined) {
+        patch.mapping_confirmed = !!req.body.mapping_confirmed;
+      }
+      await saveSetup(patch);
+      res.json(await setupState());
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  /**
+   * The last step: reconcile the last 24 hours and report a real figure.
+   *
+   * Setup ends on a number the merchant can check, never on a promise that Raze
+   * will start watching.
+   */
+  app.post('/api/setup/backfill', localOnly, async (_req, res) => {
+    const rz = CONNECT.razorpay || razorpay;
+    if (!rz || !rz.keyId) return res.status(400).json({ error: 'connect Razorpay first' });
+    try {
+      const { computeImpact } = require(path.join(RAZE, 'src', 'impact'));
+      const impact = await computeImpact({
+        pool, razorpay: rz, results: [], table: ORDERS_TABLE,
+        keyColumn: KEY_COLUMN, amountColumn: AMOUNT_COLUMN,
+      });
+      const live = impact.razorpay;
+      if (!live.available) return res.status(400).json({ error: live.reason, kind: live.kind });
+
+      await saveSetup({
+        razorpay_ok: true,
+        database_ok: true,
+        backfill_at: new Date(),
+        backfill_checked: live.capturedCount,
+        backfill_missing: live.unrecorded.length,
+        backfill_paise: live.unrecordedPaise,
+      });
+      res.json({
+        checked: live.capturedCount,
+        missing: live.unrecorded.length,
+        paise: live.unrecordedPaise,
+        orders: live.unrecorded.slice(0, 10),
+        setup: await setupState(),
+      });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ---- what Raze did while they were away --------------------------------
+  app.get('/api/activity', async (req, res) => {
+    try {
+      const actions = require(path.join(RAZE, 'src', 'actions'));
+      const hours = Number(req.query.hours || 24);
+      const out = await actions.since(pool, new Date(Date.now() - hours * 3600 * 1000));
+      res.json(out);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/activity/ack', async (req, res) => {
+    try {
+      const actions = require(path.join(RAZE, 'src', 'actions'));
+      const n = await actions.acknowledge(pool, String(req.body.order_id || ''));
+      res.json({ acknowledged: n });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/policy', (_req, res) => {
+    const policy = require(path.join(RAZE, 'src', 'policy'));
+    res.json(policy.describe());
   });
 
   app.get('/api/state', async (_req, res) => {

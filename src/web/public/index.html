@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Raze Console</title>
+<title>Raze</title>
 <style>
   :root{
     --ground:#0a0f0d; --panel:#101614; --panel2:#0d1311; --line:#1e2a26;
@@ -13,860 +13,466 @@
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5}
+  html,body{height:100%}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.55;display:flex;flex-direction:column}
   a{color:var(--cool)}
-  code,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  code{font-family:var(--mono);font-variant-numeric:tabular-nums}
 
-  header{position:sticky;top:0;z-index:10;background:rgba(10,15,13,.94);backdrop-filter:blur(6px);
-    border-bottom:1px solid var(--line);padding:12px 20px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  header{flex:none;border-bottom:1px solid var(--line);padding:12px 20px;
+    display:flex;gap:14px;align-items:center;background:rgba(10,15,13,.96)}
   .brand{font-weight:650;letter-spacing:-.01em}
-  .brand span{color:var(--muted);font-weight:400}
-  .hookurl{font-family:var(--mono);font-size:12px;color:var(--muted);background:var(--panel2);
-    border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer}
   .spacer{flex:1}
-  .badge{font-family:var(--mono);font-size:11.5px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
-  .badge.on{color:var(--bad);border-color:#4a2420;background:#1c0f0d}
-  .badge.ok{color:var(--good);border-color:#1e3a2e;background:#0d1a14}
-  .live{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--dim);margin-right:6px}
-  .live.up{background:var(--good);box-shadow:0 0 0 3px rgba(95,191,143,.15)}
-
-  main{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px;padding:20px;max-width:1500px;margin:0 auto}
-  @media(max-width:1080px){main{grid-template-columns:1fr}}
-
-  .stage{border:1px solid var(--line);border-radius:10px;background:var(--panel);margin-bottom:18px;overflow:hidden}
-  .stage>h2{margin:0;padding:14px 18px;font-size:14.5px;font-weight:600;border-bottom:1px solid var(--line);
-    display:flex;align-items:center;gap:10px}
-  .num{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);
-    border-radius:5px;padding:1px 6px}
-  .body{padding:16px 18px}
-  .lede{color:var(--muted);margin:0 0 14px;max-width:68ch}
-
-  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  input,button,select{font-family:inherit;font-size:13.5px}
-  input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:7px;padding:9px 11px;min-width:0}
-  input:focus{outline:2px solid #24413a;outline-offset:-1px}
-  input.grow{flex:1}
-  button{background:#16211d;border:1px solid #24332d;color:var(--ink);border-radius:7px;padding:9px 14px;cursor:pointer}
-  button:hover{background:#1b2a24}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  button.primary{background:#1d3a30;border-color:#2b5546}
-  button.danger{background:#2a1613;border-color:#4a2420;color:#f0b3a8}
-
-  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
-  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.04em;
-    text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--line)}
-  td{padding:6px 8px;border-bottom:1px solid #16201c;vertical-align:top}
-  tr:last-child td{border-bottom:none}
-  .scroll{overflow-x:auto}
-
-  .probe{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--panel2)}
-  .probe.fail{border-color:#4a2420}
-  .probe.pass{border-color:#1e3a2e}
-  .probe .t{display:flex;gap:10px;align-items:center;font-weight:600;font-size:13.5px}
-  .tag{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:4px}
-  .tag.fail{background:#2a1613;color:#f0b3a8}
-  .tag.pass{background:#0f2119;color:#8fd9b6}
-  .tag.skip{background:#1a1a1a;color:var(--muted)}
-  .obs{font-family:var(--mono);font-size:12.5px;margin-top:7px}
-  .why{color:var(--muted);font-size:12.5px;margin-top:7px;max-width:74ch}
-  .ev{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin-top:6px;word-break:break-all}
-
-  .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:4px 0 14px}
-  .fig{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--panel2)}
-  .fig .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
-  .fig .v{font-family:var(--mono);font-size:22px;margin-top:4px;font-variant-numeric:tabular-nums}
-  .fig .s{font-size:11.5px;color:var(--muted);margin-top:4px}
-  .fig.risk .v{color:var(--risk)}
-  .fig.bad .v{color:var(--bad)}
-  .fig.good .v{color:var(--good)}
-
-  .prov{font-size:11.5px;color:var(--dim);border-left:2px solid var(--line);padding-left:10px;margin-top:10px;max-width:76ch}
-
-  aside{position:sticky;top:64px;align-self:start;max-height:calc(100vh - 84px);display:flex;flex-direction:column;gap:14px}
-  .feed{border:1px solid var(--line);border-radius:10px;background:var(--panel);display:flex;flex-direction:column;min-height:0}
-  .feed h3{margin:0;padding:11px 14px;font-size:12.5px;font-weight:600;border-bottom:1px solid var(--line);
-    display:flex;align-items:center;gap:8px}
-  .feed .list{overflow:auto;padding:6px 0;font-family:var(--mono);font-size:11.5px;max-height:44vh}
-  .d{padding:6px 14px;border-bottom:1px solid #141d19}
-  .d:last-child{border-bottom:none}
-  .d .l1{display:flex;gap:8px;align-items:baseline}
-  .d .et{color:var(--cool)}
-  .d .l2{color:var(--dim);margin-top:2px}
-  .empty{padding:16px 14px;color:var(--dim);font-family:var(--sans);font-size:12.5px}
-
-  .hit{border:1px solid #4a2420;border-radius:8px;padding:11px 13px;margin-bottom:9px;background:#140d0c}
-  .hit .t{font-weight:600;font-size:13px;color:#f0b3a8}
-  .hit .e{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:5px}
-  pre{margin:8px 0 0;background:#0a100e;border:1px solid var(--line);border-radius:6px;
-    padding:9px 11px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
-  .note{color:var(--muted);font-size:12.5px}
-  .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:8px}
-  .ok{color:var(--good)}
-
-  .step{border-top:1px solid var(--line);padding:14px 0}
-  .step:first-of-type{border-top:none;padding-top:4px}
-  .steph{display:flex;align-items:center;gap:9px;font-weight:600;font-size:13.5px;margin-bottom:10px}
-  .dot{width:9px;height:9px;border-radius:99px;background:var(--dim);flex:none}
-  .dot.good{background:var(--good);box-shadow:0 0 0 3px rgba(95,191,143,.15)}
-  .dot.bad{background:var(--bad);box-shadow:0 0 0 3px rgba(224,92,74,.15)}
-  .dot.warn{background:var(--risk)}
-  .prov.ok{color:var(--good);border-left-color:#1e3a2e}
-  .errtext{color:var(--bad)} .oktext{color:var(--good)}
-
-  .prop{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--panel2)}
-  .proph{display:flex;gap:9px;align-items:center;cursor:pointer;font-size:13.5px}
-  .proph input{width:15px;height:15px;accent-color:#3f8f6f;min-width:0}
-  .mapline{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:6px}
-  details{margin-top:8px}
-  summary{cursor:pointer;font-size:12px;color:var(--dim)}
-  ul.ev{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted)}
-  .ask{margin-top:9px;border-left:2px solid var(--risk);padding-left:10px;font-size:12.5px;color:var(--risk)}
-  .ask ul{margin:5px 0;padding-left:16px}
-
-  .verdict{font-family:var(--mono);font-size:19px;letter-spacing:.06em;padding:12px 16px;
-    border-radius:8px;margin:14px 0;text-align:center}
-  .verdict.good{color:var(--good);background:#0d1a14;border:1px solid #1e3a2e}
-  .verdict.bad{color:var(--bad);background:#1c0f0d;border:1px solid #4a2420}
-  .checks{display:flex;flex-direction:column;gap:7px}
-  .chk{display:grid;grid-template-columns:20px 210px 1fr;gap:10px;align-items:baseline;
-    border:1px solid var(--line);border-radius:7px;padding:9px 12px;background:var(--panel2)}
-  @media(max-width:720px){.chk{grid-template-columns:20px 1fr}.chk .cd{grid-column:1/-1}}
-  .chk.ok{border-color:#1e3a2e} .chk.no{border-color:#4a2420}
-  .chk .mark{font-family:var(--mono)} .chk.ok .mark{color:var(--good)} .chk.no .mark{color:var(--bad)}
-  .chk .cn{font-weight:600;font-size:13px}
-  .chk .cd{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
-
-  .tgroup{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;padding:10px 12px;background:var(--panel2)}
-  .tgroup.best{border-color:#2b5546}
-  .tgroup>summary{font-size:13px;cursor:pointer;display:flex;gap:9px;align-items:center}
-  .tgroup .prop{margin-top:9px}
-
-  .stage.ask{border-color:#2b5546}
-  .statebar{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:14px;
-    border-bottom:1px solid var(--line);padding-bottom:12px}
-  .pill{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;padding:4px 11px;
+  .pill{font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;padding:4px 11px;
     border-radius:99px;border:1px solid var(--line);color:var(--muted)}
   .pill.good{color:var(--good);border-color:#1e3a2e;background:#0d1a14}
   .pill.bad{color:var(--bad);border-color:#4a2420;background:#1c0f0d}
   .pill.warn{color:var(--risk);border-color:#4a3a20;background:#1c150d}
-  .statesays{color:var(--muted);font-size:13px;flex:1;min-width:240px}
 
-  .thread{display:flex;flex-direction:column;gap:12px;max-height:46vh;overflow-y:auto;padding-right:4px}
-  .msg .who{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin-bottom:4px}
-  .msg .what{font-size:14px;line-height:1.55}
-  .msg.you .what{color:var(--ink);background:#16211d;border:1px solid #24332d;
-    border-radius:9px;padding:9px 12px;display:inline-block;max-width:80%}
-  .msg.raze .what{color:var(--ink);max-width:74ch}
-  .msg.warnmsg .what{color:var(--risk)}
+  main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 360px;
+    gap:20px;padding:20px;max-width:1500px;width:100%;margin:0 auto}
+  @media(max-width:1000px){main{grid-template-columns:1fr}}
+  .left{display:flex;flex-direction:column;min-height:0;gap:16px}
+
+  .card{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+  .card h2{margin:0;padding:13px 16px;font-size:13.5px;font-weight:600;
+    border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .card .body{padding:15px 16px}
+  .lede{color:var(--muted);margin:0 0 13px;max-width:66ch}
+  .note{color:var(--muted);font-size:12.5px}
+  .prov{font-size:11.5px;color:var(--dim);border-left:2px solid var(--line);
+    padding-left:10px;margin-top:9px;max-width:74ch}
+  .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:8px}
+  .oktext{color:var(--good)} .errtext{color:var(--bad)}
+  .hide{display:none !important}
+
+  .row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+  input,button{font-family:inherit;font-size:13.5px}
+  input{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+    border-radius:7px;padding:9px 11px;min-width:0}
+  input:focus{outline:2px solid #24413a;outline-offset:-1px}
+  input.grow{flex:1}
+  button{background:#16211d;border:1px solid #24332d;color:var(--ink);border-radius:7px;
+    padding:9px 14px;cursor:pointer}
+  button:hover{background:#1b2a24}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:#1d3a30;border-color:#2b5546}
+  button.small{padding:5px 10px;font-size:12.5px}
+
+  .step{border-top:1px solid var(--line);padding:14px 0}
+  .step:first-of-type{border-top:none;padding-top:2px}
+  .steph{display:flex;align-items:center;gap:9px;font-weight:600;font-size:13.5px;margin-bottom:9px}
+  .dot{width:9px;height:9px;border-radius:99px;background:var(--dim);flex:none}
+  .dot.good{background:var(--good);box-shadow:0 0 0 3px rgba(95,191,143,.15)}
+  .dot.bad{background:var(--bad)}
+  .step.locked{opacity:.4;pointer-events:none}
+  .qa{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-top:10px;
+    background:var(--panel2)}
+  .qa .q{font-weight:600;font-size:13px;margin-bottom:8px}
+  .prop{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+    background:var(--panel2)}
+  .mapline{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:5px}
+
+  .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px}
+  .fig{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--panel2)}
+  .fig .k{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+  .fig .v{font-family:var(--mono);font-size:21px;margin-top:3px;font-variant-numeric:tabular-nums}
+  .fig .s{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .fig.good .v{color:var(--good)} .fig.risk .v{color:var(--risk)}
+  .arow{display:flex;gap:10px;align-items:baseline;padding:9px 0;border-top:1px solid #16201c;
+    font-size:13px;flex-wrap:wrap}
+  .arow .oid{font-family:var(--mono);font-size:12.5px}
+  .arow .amt{font-family:var(--mono);color:var(--risk)}
+  .arow .why{color:var(--muted);font-size:12.5px;flex-basis:100%}
+
+  .chat{flex:1;display:flex;flex-direction:column;min-height:0}
+  .chat .body{display:flex;flex-direction:column;min-height:0;flex:1;padding:0}
+  .thread{flex:1;overflow-y:auto;padding:15px 16px;display:flex;flex-direction:column;gap:13px}
+  .msg .who{font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);
+    margin-bottom:4px}
+  .msg.you .what{background:#16211d;border:1px solid #24332d;border-radius:9px;
+    padding:8px 12px;display:inline-block;max-width:82%}
+  .msg.raze .what{max-width:72ch}
+  .msg .what p{margin:0 0 9px} .msg .what p:last-child{margin-bottom:0}
+  .msg .what ul{margin:6px 0;padding-left:20px}
+  .msg .what code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font-size:12.5px}
+  .msg .what strong{font-weight:650}
   .dots::after{content:'…';animation:blink 1.2s infinite}
   @keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
-
-  .composer{display:flex;gap:10px;margin-top:14px}
-  .composer input{flex:1}
-  .suggest{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .composer{flex:none;border-top:1px solid var(--line);padding:12px 16px;background:var(--panel)}
+  .disclaim{font-size:11.5px;color:var(--dim);margin-top:8px;max-width:74ch}
+  .suggest{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
   .chip{background:var(--panel2);border:1px solid var(--line);color:var(--muted);
-    border-radius:99px;padding:6px 12px;font-size:12.5px;cursor:pointer}
+    border-radius:99px;padding:5px 11px;font-size:12.5px;cursor:pointer}
   .chip:hover{color:var(--ink);border-color:#2b5546}
-
   .orderbtn{font-family:var(--mono);font-size:12.5px;background:#16211d;border:1px solid #2b5546;
     color:var(--cool);border-radius:5px;padding:1px 6px;cursor:pointer}
-  .orderbtn:hover{background:#1d3a30}
   ul.plan{margin:8px 0;padding-left:18px;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
-  .planmeta{font-size:12.5px;color:var(--dim);margin-bottom:10px}
-  .planact{display:flex;gap:9px;align-items:center}
-  .hide{display:none}
+  .planact{display:flex;gap:9px;align-items:center;margin-top:8px}
+
+  aside{display:flex;flex-direction:column;gap:14px;min-height:0}
+  .atrisk{font-family:var(--mono);font-size:26px;color:var(--risk);
+    font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:10.5px;letter-spacing:.04em;
+    text-transform:uppercase;padding:5px 7px;border-bottom:1px solid var(--line)}
+  td{padding:5px 7px;border-bottom:1px solid #16201c}
+  .scroll{overflow:auto;max-height:38vh}
 </style>
 </head>
 <body>
 
 <header>
-  <div class="brand">Raze <span>console</span></div>
-  <div class="hookurl" id="hook" title="click to copy">webhook: …</div>
+  <div class="brand">Raze</div>
   <div class="spacer"></div>
-  <div class="badge" id="mode">nothing armed</div>
-  <div class="badge"><span class="live" id="live"></span><span id="livetxt">connecting</span></div>
+  <div class="pill" id="statePill">checking…</div>
 </header>
 
 <main>
-<div>
+  <div class="left">
 
-  <!-- ask ---------------------------------------------------------------- -->
-  <section class="stage ask" id="askStage">
-    <h2><span class="num">◆</span> Ask Raze</h2>
-    <div class="body">
-      <div class="statebar" id="stateBar">
-        <span class="pill" id="statePill">checking…</span>
-        <span class="statesays" id="stateSays"></span>
-      </div>
+    <section class="card" id="setup">
+      <h2>Protect my Razorpay payments</h2>
+      <div class="body">
+        <p class="lede">Connect your account and your database. Raze works out what your
+          payment model looks like, shows you what it found, and does nothing until you
+          confirm it.</p>
 
-      <div class="thread" id="thread">
-        <div class="msg raze">
-          <div class="who">Raze</div>
-          <div class="what">Ask me anything about your payments. I read your database and
-            Razorpay's records, and I tell you where they disagree. I will never change
-            anything without showing you the plan first.</div>
+        <div class="step" id="s1">
+          <div class="steph"><span class="dot" id="d1"></span> Your Razorpay account</div>
+          <div class="row">
+            <input class="grow" id="keyId" placeholder="rzp_test_..." autocomplete="off" spellcheck="false">
+            <input class="grow" id="keySecret" type="password" placeholder="key secret" autocomplete="off">
+            <button class="primary" id="bConnect">Connect</button>
+          </div>
+          <div class="prov">Test Mode keys. Held in memory for this session — never written
+            to disk, never logged, never returned by any endpoint.</div>
+          <div id="o1"></div>
+        </div>
+
+        <div class="step locked" id="s2">
+          <div class="steph"><span class="dot" id="d2"></span> Where Razorpay should deliver</div>
+          <div class="row">
+            <input class="grow" id="hookUrl" placeholder="https://your-deployment/webhook">
+            <button id="bHook">Register</button>
+          </div>
+          <div class="prov">Raze generates the secret, subscribes the five events that matter,
+            then reads the registration back from Razorpay to confirm it exists. This needs a
+            public HTTPS address — Razorpay will not accept a local one.</div>
+          <div id="o2"></div>
+        </div>
+
+        <div class="step locked" id="s3">
+          <div class="steph"><span class="dot" id="d3"></span> Your application database</div>
+          <div class="row">
+            <input class="grow" id="dbUrl" type="password" placeholder="postgres://user:pass@host:5432/db" autocomplete="off">
+            <button class="primary" id="bDb">Read my schema</button>
+          </div>
+          <div class="prov">Read-only credentials are enough at this step. PostgreSQL only —
+            that is a real limitation, not a preference.</div>
+          <div id="o3"></div>
+        </div>
+
+        <div class="step locked" id="s4">
+          <div class="steph"><span class="dot" id="d4"></span> What Raze found</div>
+          <div id="o4"></div>
+          <div class="qa hide" id="qSide">
+            <div class="q">Does marking an order paid trigger anything else in your
+              application — an email, a shipment, a fulfilment hook?</div>
+            <div class="row">
+              <button class="small" data-side="yes">Yes, or I'm not sure</button>
+              <button class="small" data-side="no">No, it only changes the row</button>
+            </div>
+            <div class="prov">If yes, Raze never repairs unattended — it always asks you
+              first. Repairing something that fires a shipment could send it twice.</div>
+          </div>
+          <div class="qa hide" id="qRefund">
+            <div class="q">On a refund, should the amount come back out of the order, or
+              should only the status change?</div>
+            <div class="row">
+              <button class="small" data-refund="status">Status only</button>
+              <button class="small" data-refund="subtract">Also subtract the amount</button>
+            </div>
+            <div class="prov">Status only keeps the order's amount meaning what the customer
+              was charged, which is what reconciliation compares against.</div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="bConfirm" disabled>Confirm and check the last 24 hours</button>
+          </div>
+          <div id="o5"></div>
         </div>
       </div>
+    </section>
 
-      <div class="composer">
-        <input id="askInput" placeholder="is everything alright?" autocomplete="off">
-        <button class="primary" id="askBtn">Ask</button>
-      </div>
+    <section class="card hide" id="activity">
+      <h2>Since you were last here</h2>
+      <div class="body" id="activityBody"><p class="note">Looking…</p></div>
+    </section>
 
-      <div class="suggest">
-        <button class="chip" data-q="is everything alright?">is everything alright?</button>
-        <button class="chip" data-q="which payments are we missing, and how much money is that?">what are we missing?</button>
-        <button class="chip" data-q="read my schema and tell me which table holds my orders">read my schema</button>
-        <button class="chip" data-q="is my integration safe from duplicate deliveries?">am I safe from duplicates?</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- C1 --------------------------------------------------------------- -->
-  <section class="stage" id="connectStage">
-    <h2><span class="num">A</span> Protect my Razorpay payments</h2>
-    <div class="body">
-      <p class="lede">You do not need to know what a webhook is. Connect your Test Mode
-        account and your database; Raze works out what your payment model looks like,
-        shows you what it found, and does nothing until you approve it.</p>
-
-      <!-- step 1: razorpay -->
-      <div class="step" id="stepRzp">
-        <div class="steph"><span class="dot" id="dotRzp"></span> Your Razorpay account</div>
-        <div class="row">
-          <input class="grow" id="keyId" placeholder="rzp_test_..." autocomplete="off" spellcheck="false">
-          <input class="grow" id="keySecret" type="password" placeholder="key secret" autocomplete="off">
-          <button class="primary" id="connectRzp">Connect</button>
+    <section class="card chat hide" id="chat">
+      <h2>Ask Raze</h2>
+      <div class="body">
+        <div class="thread" id="thread">
+          <div class="msg raze">
+            <div class="who">Raze</div>
+            <div class="what">Ask me anything about your payments. I read your database and
+              Razorpay's records and tell you where they disagree.</div>
+          </div>
         </div>
-        <div class="prov">Test Mode keys only. Held in memory for this session — never written
-          to disk, never logged, never returned by any endpoint.</div>
-        <div id="rzpOut"></div>
-      </div>
-
-      <!-- step 2: webhook -->
-      <div class="step" id="stepHook">
-        <div class="steph"><span class="dot" id="dotHook"></span> Where Razorpay should deliver</div>
-        <div class="row">
-          <input class="grow" id="hookUrlIn" placeholder="https://your-deployment/webhook">
-          <button id="registerHook">Register</button>
-        </div>
-        <div class="prov">Raze generates the secret and registers the five events that matter,
-          then reads the registration back from Razorpay to confirm it. Razorpay rejects
-          localhost, so this needs a deployed HTTPS URL.</div>
-        <div id="hookOut"></div>
-      </div>
-
-      <!-- step 3: database -->
-      <div class="step" id="stepDb">
-        <div class="steph"><span class="dot" id="dotDb"></span> Your application database</div>
-        <div class="row">
-          <input class="grow" id="dbUrl" type="password" placeholder="postgres://user:pass@host:5432/db" autocomplete="off">
-          <button class="primary" id="connectDb">Read my schema</button>
-        </div>
-        <div class="prov">Read-only at this step. Raze reads
-          <code>information_schema</code> and compares it against the field paths present in
-          796 real captured deliveries. Name and type matching — deterministic, no model,
-          same answer every time.</div>
-        <div id="dbOut"></div>
-      </div>
-
-      <!-- step 4: approve -->
-      <div class="step hide" id="stepApprove">
-        <div class="steph"><span class="dot" id="dotApprove"></span> What Raze found</div>
-        <div id="proposalOut"></div>
-        <div class="row" style="margin-top:12px">
-          <button class="primary" id="approveBtn">Approve and protect</button>
-          <span class="note" id="approveNote">Nothing is armed until you press this.</span>
+        <div class="composer">
+          <div class="row">
+            <input class="grow" id="ask" placeholder="is everything alright?" autocomplete="off">
+            <button class="primary" id="bAsk">Ask</button>
+          </div>
+          <div class="suggest">
+            <button class="chip" data-q="is everything alright?">is everything alright?</button>
+            <button class="chip" data-q="which payments are we missing, and how much money is that?">what are we missing?</button>
+            <button class="chip" data-q="what have you done in the last day?">what have you done?</button>
+          </div>
+          <div class="disclaim">The state and the amounts are read from your database and
+            Razorpay. They don't come from a model.</div>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- C2 --------------------------------------------------------------- -->
-  <section class="stage">
-    <h2><span class="num">B</span> Check my payment protection</h2>
-    <div class="body">
-      <p class="lede">Seven claims, each answered by something that actually ran — a real
-        delivery fired at your endpoint, or a real query against Razorpay. Not a
-        configuration check.</p>
-      <div class="row">
-        <button class="primary" id="checkBtn">Check my payment protection</button>
-      </div>
-      <div id="protOut"></div>
-    </div>
-  </section>
-
-  <!-- 1 ---------------------------------------------------------------- -->
-  <section class="stage">
-    <h2><span class="num">1</span> Inspect any integration</h2>
-    <div class="body">
-      <p class="lede">Point Raze at a real integration. It clones the repository, finds the
-        code that receives Razorpay webhooks, and reports what is wrong with it — with the
-        file, the line and the evidence. Nothing is executed at this step.</p>
-      <div class="row">
-        <input class="grow" id="repo" placeholder="https://github.com/owner/repo"
-               value="https://github.com/neharahman/razorpay-webhook">
-        <button class="primary" id="scanBtn">Inspect</button>
-      </div>
-      <div id="scanOut"></div>
-    </div>
-  </section>
-
-  <!-- 2 ---------------------------------------------------------------- -->
-  <section class="stage">
-    <h2><span class="num">2</span> What happens without Raze</h2>
-    <div class="body">
-      <p class="lede">A merchant with those defects is started for real, with its own
-        database. Five probes fire genuine captured Razorpay deliveries at it — the same
-        retry ladder Razorpay actually sends — and the result is read back out of the
-        merchant's own table. This is business state, not status codes.</p>
-      <div class="row">
-        <button id="armBroken">Start the merchant</button>
-        <button class="primary" id="auditBtn" disabled>Run the probes</button>
-        <button id="resetBtn">Clear state</button>
-      </div>
-      <div id="auditOut"></div>
-    </div>
-  </section>
-
-  <!-- 3 ---------------------------------------------------------------- -->
-  <section class="stage">
-    <h2><span class="num">3</span> What it costs</h2>
-    <div class="body">
-      <p class="lede">Money, derived from what just happened — not from a study. Every
-        figure names where it came from. Orders nobody paid for are counted separately and
-        never called revenue loss.</p>
-      <div class="row" style="margin-bottom:14px">
-        <input id="vol" type="number" min="0" placeholder="transactions / month" style="width:190px">
-        <input id="aov" type="number" min="0" placeholder="average order value ₹" style="width:200px">
-        <input id="rate" type="number" min="0" max="100" step="0.1"
-               placeholder="% deliveries retried" style="width:190px">
-        <button id="impactBtn">Recompute</button>
-      </div>
-      <div id="impactOut"><p class="note">Run the probes first.</p></div>
-    </div>
-  </section>
-
-  <!-- 4 ---------------------------------------------------------------- -->
-  <section class="stage">
-    <h2><span class="num">4</span> The same code, behind Raze</h2>
-    <div class="body">
-      <p class="lede">The merchant's handler is not modified. The same defective code runs
-        behind the Raze runtime, and the identical probes are fired again.</p>
-      <div class="row">
-        <button id="armProtected">Put Raze in front</button>
-        <button class="primary" id="auditBtn2" disabled>Run the same probes</button>
-      </div>
-      <div id="auditOut2"></div>
-    </div>
-  </section>
-
-  <!-- 5 ---------------------------------------------------------------- -->
-  <section class="stage">
-    <h2><span class="num">5</span> Live Razorpay</h2>
-    <div class="body">
-      <p class="lede">Create a real Test Mode payment link, pay it, and watch the delivery
-        arrive on the right. The order id shown here is the id in your Razorpay dashboard.
-        Then sever delivery entirely: reconciliation recovers the payment by asking
-        Razorpay what it recorded, and the ledger names what genuinely never came.</p>
-      <div class="row">
-        <input id="amt" type="number" value="100" style="width:150px" placeholder="paise">
-        <button id="orderBtn">Create payment link</button>
-        <button id="reconcileBtn">Reconcile</button>
-        <button id="ledgerBtn">Sweep ledger</button>
-      </div>
-      <div id="liveOut"></div>
-    </div>
-  </section>
-
-</div>
-
-<aside>
-  <div class="feed">
-    <h3>Deliveries <span class="badge" id="dcount">0</span></h3>
-    <div class="list" id="feed"><div class="empty">Nothing yet. Deliveries appear here the
-      moment Razorpay posts to this console, and while the probes run.</div></div>
+    </section>
   </div>
-  <div class="feed">
-    <h3>Merchant business state</h3>
-    <div class="list" id="orders"><div class="empty">No rows.</div></div>
-  </div>
-</aside>
+
+  <aside class="hide" id="side">
+    <section class="card">
+      <h2>At risk</h2>
+      <div class="body">
+        <div class="atrisk" id="atRisk">—</div>
+        <div class="note" id="atRiskSub">not checked yet</div>
+      </div>
+    </section>
+    <section class="card" style="min-height:0">
+      <h2>Your orders</h2>
+      <div class="scroll" id="orders"><p class="note" style="padding:14px">No rows.</p></div>
+    </section>
+  </aside>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const money = (p) => '₹' + (Math.round(p) / 100).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const rupees = (p) => '₹' + (Math.round(Number(p) || 0) / 100).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+const post = async (u, b) => (await fetch(u, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(b||{})})).json();
 
-let deliveries = [];
-
-// ---- webhook url -----------------------------------------------------------
-const hookUrl = location.origin + '/webhook';
-$('hook').textContent = 'webhook: ' + hookUrl;
-$('hook').onclick = () => navigator.clipboard?.writeText(hookUrl);
-
-// ---- live stream -----------------------------------------------------------
-const es = new EventSource('/api/events');
-es.onopen = () => { $('live').classList.add('up'); $('livetxt').textContent = 'live'; };
-es.onerror = () => { $('live').classList.remove('up'); $('livetxt').textContent = 'reconnecting'; };
-es.onmessage = (m) => {
-  const e = JSON.parse(m.data);
-  if (e.type === 'delivery') { deliveries.unshift(e); renderFeed(); refreshState(); }
-  if (e.type === 'armed') setMode(e.mode);
-  if (e.type === 'reset') { deliveries = []; renderFeed(); refreshState(); }
-  if (e.type === 'reconcile-done' || e.type === 'ledger') refreshState();
-};
-
-function setMode(m) {
-  const el = $('mode');
-  el.textContent = m === 'unprotected' ? 'merchant alone — unprotected'
-                 : m === 'protected' ? 'behind Raze'
-                 : m === 'correct' ? 'correct integration (control)'
-                 : 'nothing armed';
-  el.className = 'badge' + (m === 'unprotected' ? ' on' : m === 'none' ? '' : ' ok');
-  $('auditBtn').disabled = (m !== 'unprotected');
-  $('auditBtn2').disabled = (m !== 'protected');
-}
-
-function renderFeed() {
-  $('dcount').textContent = deliveries.length;
-  if (!deliveries.length) return;
-  $('feed').innerHTML = deliveries.slice(0, 60).map(d => `
-    <div class="d">
-      <div class="l1">
-        <span class="et">${esc(d.eventType || 'unparsed')}</span>
-        <span style="color:var(--muted)">${d.status === null ? '—' : 'HTTP ' + d.status}</span>
-        <span style="margin-left:auto;color:${d.signatureValid ? 'var(--good)' : 'var(--bad)'}">
-          ${d.signaturePresent ? (d.signatureValid ? 'sig ok' : 'sig bad') : 'unsigned'}</span>
-      </div>
-      <div class="l2">${esc(d.orderId || '')} ${d.amount != null ? '· ' + money(d.amount) : ''}
-        · ${d.bytes}B · ${esc(d.forwarded || '')}</div>
-    </div>`).join('');
-}
-
-async function refreshState() {
-  const s = await (await fetch('/api/state')).json();
-  setMode(s.mode);
-  if (s.restoredOnBoot && s.mode !== 'none') {
-    $('mode').textContent += ' · restored';
-    $('mode').title = 'This console restarted and put the merchant back as it was.';
-  }
-  if (s.deliveries && !deliveries.length) { deliveries = s.deliveries; renderFeed(); }
-  $('orders').innerHTML = (s.orders && s.orders.length)
-    ? `<div class="scroll"><table><tr><th>order</th><th>status</th><th>credited</th><th>×</th></tr>` +
-      s.orders.map(o => `<tr><td>${esc(o.order_id).slice(0,22)}</td><td>${esc(o.status)}</td>
-        <td>${money(o.credited_paise)}</td><td>${o.credit_count}</td></tr>`).join('') + '</table></div>'
-    : '<div class="empty">No rows.</div>';
-}
-
-// ---- 1. scan ---------------------------------------------------------------
-$('scanBtn').onclick = async () => {
-  const btn = $('scanBtn'); btn.disabled = true; btn.textContent = 'Cloning…';
-  $('scanOut').innerHTML = '';
-  try {
-    const r = await fetch('/api/scan', {method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({repo: $('repo').value})});
-    const d = await r.json();
-    if (d.error) { $('scanOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
-    $('scanOut').innerHTML = `
-      <div class="prov" style="margin-bottom:12px">${esc(d.slug)}${d.handler ? ' · handler <code>' + esc(d.handler) + '</code>' : ''}</div>
-      ${d.hits.map(h => `
-        <div class="hit">
-          <div class="t">${esc(h.title)}${h.line ? ' · line ' + h.line : ''}</div>
-          <div class="e">${esc(h.evidence)}</div>
-          ${h.excerpt ? '<pre>' + esc(h.excerpt) + '</pre>' : ''}
-          ${h.fails.length ? '<div class="e">would fail: ' + esc(h.fails.join(', ')) + '</div>' : ''}
-        </div>`).join('')}
-      ${d.note ? '<p class="note">' + esc(d.note) + '</p>' : ''}`;
-  } finally { btn.disabled = false; btn.textContent = 'Inspect'; }
-};
-
-// ---- arming ----------------------------------------------------------------
-async function arm(mode, btn) {
-  btn.disabled = true; const t = btn.textContent; btn.textContent = 'Starting…';
-  try {
-    const r = await fetch('/api/arm', {method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({mode})});
-    const d = await r.json();
-    if (d.error) alert(d.error); else setMode(d.mode);
-  } finally { btn.disabled = false; btn.textContent = t; }
-}
-$('armBroken').onclick = (e) => arm('unprotected', e.target);
-$('armProtected').onclick = (e) => arm('protected', e.target);
-
-$('resetBtn').onclick = async () => {
-  await fetch('/api/reset', {method:'POST'});
-  $('auditOut').innerHTML = ''; $('auditOut2').innerHTML = '';
-  $('impactOut').innerHTML = '<p class="note">Run the probes first.</p>';
-};
-
-// ---- probes ----------------------------------------------------------------
-function renderProbes(results) {
-  const failed = results.filter(r => !r.pass).length;
-  return `<div class="prov" style="margin:12px 0">${results.length - failed} of ${results.length}
-    probes passed. Every delivery below was answered with HTTP 200 — status codes cannot see
-    any of this.</div>` + results.map(r => `
-    <div class="probe ${r.pass ? 'pass' : 'fail'}">
-      <div class="t">${esc(r.title)}
-        <span class="tag ${r.skipped ? 'skip' : r.pass ? 'pass' : 'fail'}">
-          ${r.skipped ? 'not evaluated' : r.pass ? 'pass' : 'finding'}</span></div>
-      <div class="obs">${esc(r.observed)}</div>
-      ${!r.pass ? '<div class="why">' + esc(r.why) + '</div>' : ''}
-      <div class="ev">${esc(JSON.stringify(r.evidence))}</div>
-    </div>`).join('');
-}
-
-async function runAudit(target) {
-  const out = $(target === 1 ? 'auditOut' : 'auditOut2');
-  const btn = $(target === 1 ? 'auditBtn' : 'auditBtn2');
-  btn.disabled = true; const t = btn.textContent; btn.textContent = 'Firing deliveries…';
-  out.innerHTML = '<p class="note">Sending real captured Razorpay deliveries…</p>';
-  try {
-    const r = await fetch('/api/audit', {method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({volume: volume()})});
-    const d = await r.json();
-    if (d.error) { out.innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
-    out.innerHTML = renderProbes(d.results);
-    if (target === 1) renderImpact(d.impact);
-    refreshState();
-  } finally { btn.disabled = false; btn.textContent = t; }
-}
-$('auditBtn').onclick = () => runAudit(1);
-$('auditBtn2').onclick = () => runAudit(2);
-
-// ---- impact ----------------------------------------------------------------
-const volume = () => ({
-  monthlyTransactions: Number($('vol').value) || 0,
-  averageOrderValueRupees: Number($('aov').value) || 0,
-  // Deliberately not defaulted. See src/impact — the corpus measured what
-  // Razorpay does when a delivery fails, not how often failure happens here.
-  retryRatePercent: $('rate').value === '' ? null : Number($('rate').value),
-});
-
-function renderImpact(i) {
-  if (!i) return;
-  const rz = i.razorpay || {};
-  const fig = (k, v, s, cls='') => `<div class="fig ${cls}"><div class="k">${k}</div>
-    <div class="v">${v}</div><div class="s">${s}</div></div>`;
-
-  let html = '<div class="figs">' +
-    fig('Probes failed', `${i.measured.probesFailed}/${i.measured.probesRun}`,
-        'fired at the running merchant', i.measured.probesFailed ? 'bad' : 'good') +
-    fig('Credited, never paid', money(i.measured.phantomCreditPaise),
-        'read from the merchant table', i.measured.phantomCreditPaise ? 'risk' : '') +
-    fig('Orders corrupted', i.measured.corruptedOrders,
-        'wrong status or balance', i.measured.corruptedOrders ? 'bad' : '') +
-    (rz.available
-      ? fig('Captured, not recorded', money(rz.unrecordedPaise),
-            `${rz.unrecorded.length} of ${rz.capturedCount} live payments`, rz.unrecordedPaise ? 'risk' : 'good')
-      : fig('Live comparison', '—', esc(rz.reason || 'unavailable'))) +
-  '</div>';
-
-  html += `<div class="prov">${esc(i.measured.source)}.</div>`;
-
-  const ex = i.expectations || {};
-  html += `<div class="prov">Expectation ledger — recovered ${ex.recovered},
-    failed ${ex.failed}, abandoned ${ex.abandoned}. ${esc(ex.note)}</div>`;
-
-  const ep = i.endpoint || {};
-  html += `<div class="prov">Razorpay retries a failed delivery up to ${ep.maxDeliveries} times
-    across ${ep.spanHours} hours, first retry ${ep.firstRetryMs}ms — measured across
-    ${ep.corpusDeliveries} real deliveries, not quoted from documentation.
-    ${esc(ep.consequence)}</div>`;
-
-  const p = i.projection;
-  if (p && p.applicable) {
-    html += `<div class="figs" style="margin-top:16px">` +
-      fig('Projected / month', '₹' + p.perMonthRupees.toLocaleString('en-IN'),
-          p.affectedPerMonth.toLocaleString('en-IN') + ' transactions credited twice', 'risk') +
-      fig('Projected / year', '₹' + p.perYearRupees.toLocaleString('en-IN'),
-          'same arithmetic × 12', 'risk') +
-      '</div>' +
-      `<div class="prov"><code>${esc(p.arithmetic)}</code><br>${esc(p.basis)}<br>${esc(p.caveat)}</div>`;
-  } else if (p && !p.applicable) {
-    html += `<div class="prov">${esc(p.reason)}</div>`;
-  } else {
-    html += `<div class="prov">Give all three inputs above to project this onto your own
-      traffic. The retry rate is not defaulted on purpose: the 796-delivery measurement
-      records what Razorpay does when a delivery fails — 16 attempts across 22.76 hours —
-      not how often deliveries fail on your endpoint. That number is yours, and Raze
-      measures it from your own traffic once it is running.</div>`;
-  }
-  $('impactOut').innerHTML = html;
-}
-
-$('impactBtn').onclick = async () => {
-  const r = await fetch('/api/impact', {method:'POST', headers:{'content-type':'application/json'},
-    body: JSON.stringify({volume: volume()})});
-  renderImpact(await r.json());
-};
-
-// ---- 5. live ---------------------------------------------------------------
-$('orderBtn').onclick = async (e) => {
-  const btn = e.target; btn.disabled = true;
-  try {
-    const r = await fetch('/api/order', {method:'POST', headers:{'content-type':'application/json'},
-      body: JSON.stringify({amount: Number($('amt').value) || 100})});
-    const d = await r.json();
-    $('liveOut').innerHTML = d.error
-      ? `<div class="err">${esc(d.error)}</div>`
-      : `<div class="prov" style="margin-top:12px">Order <code>${esc(d.order_id || d.id)}</code> —
-         this id is in your Razorpay dashboard.<br>
-         <a href="${esc(d.url)}" target="_blank" rel="noopener">Open the payment link</a> and pay it
-         in Test Mode. The delivery appears on the right when Razorpay posts it here.</div>`;
-  } finally { btn.disabled = false; }
-};
-
-async function call(path, btn, label) {
-  btn.disabled = true; const t = btn.textContent; btn.textContent = label;
-  try {
-    const d = await (await fetch(path, {method:'POST'})).json();
-    $('liveOut').innerHTML = d.error
-      ? `<div class="err">${esc(d.error)}</div>`
-      : `<pre>${esc(JSON.stringify(d, null, 1))}</pre>`;
-    refreshState();
-  } finally { btn.disabled = false; btn.textContent = t; }
-}
-$('reconcileBtn').onclick = (e) => call('/api/reconcile', e.target, 'Asking Razorpay…');
-$('ledgerBtn').onclick = (e) => call('/api/ledger', e.target, 'Sweeping…');
-
-// ---- connect flow ----------------------------------------------------------
-const setDot = (id, state) => { const d = $(id); if (d) d.className = 'dot ' + state; };
-
-async function post(url, body) {
-  const r = await fetch(url, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  });
-  return r.json();
-}
-
-$('connectRzp').onclick = async (e) => {
-  const b = e.target; b.disabled = true; b.textContent = 'Checking…';
-  $('rzpOut').innerHTML = '';
-  try {
-    const d = await post('/api/connect/razorpay', {
-      keyId: $('keyId').value, keySecret: $('keySecret').value,
-    });
-    if (d.error) { setDot('dotRzp', 'bad'); $('rzpOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
-    setDot('dotRzp', 'good');
-    // The secret field has done its job; do not leave it sitting in the DOM.
-    $('keySecret').value = '';
-    const hooks = d.existing_webhooks || [];
-    $('rzpOut').innerHTML = `<div class="prov ok">Connected in Test Mode. Verified by calling
-      the API, not by checking the shape of the key.</div>` +
-      (hooks.length
-        ? `<div class="prov">Webhooks already on this account:<br>` +
-          hooks.map(h => `<code>${esc(h.url)}</code> ${h.active ? 'active' : 'off'}`).join('<br>') + '</div>'
-        : '<div class="prov">No webhooks registered on this account yet.</div>');
-  } finally { b.disabled = false; b.textContent = 'Connect'; }
-};
-
-$('registerHook').onclick = async (e) => {
-  const b = e.target; b.disabled = true; b.textContent = 'Registering…';
-  $('hookOut').innerHTML = '';
-  try {
-    const d = await post('/api/connect/webhook', { url: $('hookUrlIn').value });
-    if (d.error) { setDot('dotHook', 'bad'); $('hookOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
-    setDot('dotHook', d.confirmed ? 'good' : 'warn');
-    $('hookOut').innerHTML = `<div class="prov ${d.confirmed ? 'ok' : ''}">
-      Registered <code>${esc(d.id)}</code> → <code>${esc(d.url)}</code><br>
-      ${d.confirmed ? 'Read back from Razorpay and confirmed active.' : 'Registered, but Razorpay did not confirm it active.'}<br>
-      Events: ${esc((d.events || []).join(', '))}<br>${esc(d.note)}</div>`;
-  } finally { b.disabled = false; b.textContent = 'Register'; }
-};
-
-$('connectDb').onclick = async (e) => {
-  const b = e.target; b.disabled = true; b.textContent = 'Reading…';
-  $('dbOut').innerHTML = '';
-  try {
-    const d = await post('/api/connect/database', { databaseUrl: $('dbUrl').value });
-    if (d.error) { setDot('dotDb', 'bad'); $('dbOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
-    setDot('dotDb', 'good');
-    $('dbUrl').value = '';
-    $('dbOut').innerHTML = `<div class="prov ok">Read ${d.tables.length} table(s): ` +
-      d.tables.map(t => `<code>${esc(t.name)}</code>`).join(' ') + '</div>' +
-      (d.note ? `<div class="prov">${esc(d.note)}</div>` : '');
-    renderProposals(d.proposals || [], d.bestTable);
-  } finally { b.disabled = false; b.textContent = 'Read my schema'; }
-};
-
-function renderProposals(props, best) {
-  if (!props.length) { $('stepApprove').classList.add('hide'); return; }
-  $('stepApprove').classList.remove('hide');
-
-  // Grouped by table. A schema with several order-shaped tables produces a
-  // proposal for each; showing thirty checkboxes is correct and useless. The
-  // strongest candidate opens expanded and pre-ticked, the rest stay collapsed
-  // and unticked — visible, because silently picking the wrong table is the
-  // failure that actually costs money.
-  const byTable = new Map();
-  for (const p of props) {
-    if (!byTable.has(p.table)) byTable.set(p.table, []);
-    byTable.get(p.table).push(p);
-  }
-  const tables = [...byTable.keys()].sort((a, b) => (a === best ? -1 : b === best ? 1 : 0));
-
-  $('proposalOut').innerHTML = tables.map((t) => {
-    const group = byTable.get(t);
-    const isBest = t === best;
-    return `<details class="tgroup ${isBest ? 'best' : ''}" ${isBest ? 'open' : ''}>
-      <summary><b><code>${esc(t)}</code></b> — ${group.length} event(s)
-        ${isBest ? '<span class="tag pass">best match</span>' : '<span class="tag skip">other candidate</span>'}</summary>
-      ${group.map((p) => `
-        <div class="prop">
-          <label class="proph">
-            <input type="checkbox" class="propcb" data-id="${esc(p.id)}"
-              ${isBest && !p.questions.length ? 'checked' : ''}>
-            <span><b>${esc(p.eventType)}</b></span>
-          </label>
-          <div class="mapline">match on <code>${esc(p.table)}.${esc(p.key.column)}</code>
-            &larr; <code>${esc(p.key.from)}</code></div>
-          ${Object.keys(p.set || {}).length ? '<div class="mapline">set ' +
-            Object.entries(p.set).map(([k, v]) => `<code>${esc(k)}</code> = ${esc(JSON.stringify(v))}`).join(', ') + '</div>' : ''}
-          ${Object.keys(p.add || {}).length ? '<div class="mapline">add ' +
-            Object.entries(p.add).map(([k, v]) => `<code>${esc(k)}</code> += ${esc(JSON.stringify(v))}`).join(', ') + '</div>' : ''}
-          ${p.guard ? `<div class="mapline">refuse when <code>${esc(p.guard.column)}</code> is already
-            ${esc((p.guard.notIn || []).join(' or '))}</div>` : ''}
-          <details><summary>why Raze thinks so</summary>
-            <ul class="ev">${(p.evidence || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
-          </details>
-          ${p.questions.length ? `<div class="ask">Needs your decision:
-            <ul>${p.questions.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>
-            Left unticked — Raze will not choose this for you.</div>` : ''}
-        </div>`).join('')}
-    </details>`;
+// Enough markdown for what the agent writes: bold, code, bullets, paragraphs.
+// Escaped first, so nothing the model emits can inject markup.
+function md(text) {
+  const safe = esc(text);
+  return safe.split(/\n{2,}/).map((b) => {
+    const lines = b.split('\n');
+    if (lines.every((l) => /^\s*[-*]\s+/.test(l))) {
+      return '<ul>' + lines.map((l) => '<li>' + inline(l.replace(/^\s*[-*]\s+/, '')) + '</li>').join('') + '</ul>';
+    }
+    return '<p>' + lines.map(inline).join('<br>') + '</p>';
   }).join('');
 }
+function inline(s) {
+  return s
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\b(order_[A-Za-z0-9]+)\b/g, '<button class="orderbtn" data-order="$1">$1</button>');
+}
 
-$('approveBtn').onclick = async (e) => {
-  const b = e.target; b.disabled = true; b.textContent = 'Validating…';
-  try {
-    const accept = [...document.querySelectorAll('.propcb')].filter(c => c.checked).map(c => c.dataset.id);
-    const d = await post('/api/connect/approve', { accept });
-    $('approveNote').innerHTML = d.error
-      ? `<span class="errtext">${esc(d.error)}</span>`
-      : `<span class="oktext">Armed ${d.registered.length} mapping(s). ${esc(d.note)}</span>`;
-    if (!d.error) setDot('dotApprove', 'good');
-  } finally { b.disabled = false; b.textContent = 'Approve and protect'; }
-};
+const TONE = {PROTECTED:'good', DIVERGED:'bad', STALE:'warn', UNARMED:'warn',
+  BLIND:'warn', DISCONNECTED:'warn', MISMATCHED:'warn'};
+let setupDone = false;
 
-$('checkBtn').onclick = async (e) => {
-  const b = e.target; b.disabled = true; b.textContent = 'Firing real deliveries…';
-  $('protOut').innerHTML = '<p class="note">Sending real captured Razorpay deliveries…</p>';
-  try {
-    const d = await post('/api/protection', {});
-    if (d.error) { $('protOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
-    $('protOut').innerHTML = `
-      <div class="verdict ${d.protected ? 'good' : 'bad'}">${esc(d.verdict)}</div>
-      <div class="checks">${d.checks.map(c => `
-        <div class="chk ${c.ok ? 'ok' : 'no'}">
-          <span class="mark">${c.ok ? '✓' : '✗'}</span>
-          <span class="cn">${esc(c.name)}</span>
-          <span class="cd">${esc(c.detail)}</span>
-        </div>`).join('')}</div>
-      <div class="prov">${esc(d.note)}</div>`;
-    refreshState();
-  } finally { b.disabled = false; b.textContent = 'Check my payment protection'; }
-};
-
-// ---- Ask Raze --------------------------------------------------------------
-//
-// The banner state is computed, never generated: it comes from raze_status, so
-// what the merchant reads at the top of the page cannot be a hallucination. The
-// model writes the prose underneath it and holds no tool that can change
-// anything.
-
-const STATE_TONE = {
-  PROTECTED: 'good', DIVERGED: 'bad', STALE: 'warn', UNARMED: 'warn', BLIND: 'warn',
-};
-
-async function refreshAgentState() {
+async function refreshState() {
   try {
     const s = await (await fetch('/api/agent/state')).json();
-    const pill = $('statePill');
-    pill.textContent = s.state || 'unknown';
-    pill.className = 'pill ' + (STATE_TONE[s.state] || '');
-    $('stateSays').textContent = s.says || '';
-    return s;
-  } catch {
-    $('statePill').textContent = 'unreachable';
-    $('statePill').className = 'pill warn';
+    $('statePill').textContent = s.state || 'unknown';
+    $('statePill').className = 'pill ' + (TONE[s.state] || '');
+    $('statePill').title = s.says || '';
+    if (s.razorpay && s.razorpay.at_risk_paise !== undefined) {
+      $('atRisk').textContent = rupees(s.razorpay.at_risk_paise);
+      $('atRiskSub').textContent = s.razorpay.not_applied
+        + ' payment(s) Razorpay captured that your database has not applied';
+    } else if (s.razorpay && s.razorpay.unavailable) {
+      $('atRisk').textContent = '—';
+      $('atRiskSub').textContent = s.razorpay.unavailable;
+    }
+    const st = await (await fetch('/api/state')).json();
+    $('orders').innerHTML = (st.orders && st.orders.length)
+      ? '<table><tr><th>order</th><th>status</th><th>credited</th></tr>' +
+        st.orders.map(o => '<tr><td>' + esc(o.order_id).slice(0,20) + '</td><td>'
+          + esc(o.status) + '</td><td>' + rupees(o.credited_paise) + '</td></tr>').join('')
+        + '</table>'
+      : '<p class="note" style="padding:14px">No rows.</p>';
+  } catch {}
+}
+
+async function refreshActivity() {
+  try {
+    const a = await (await fetch('/api/activity?hours=24')).json();
+    const rec = a.recovered || {count:0, paise:0, orders:[]};
+    const wait = a.waiting || {count:0, paise:0, orders:[]};
+    $('activityBody').innerHTML =
+      '<div class="figs">'
+      + '<div class="fig ' + (rec.count ? 'good' : '') + '"><div class="k">Recovered</div>'
+      + '<div class="v">' + rupees(rec.paise) + '</div>'
+      + '<div class="s">' + rec.count + ' payment(s), last 24 hours</div></div>'
+      + '<div class="fig ' + (wait.count ? 'risk' : '') + '"><div class="k">Waiting for you</div>'
+      + '<div class="v">' + wait.count + '</div>'
+      + '<div class="s">' + (wait.count ? rupees(wait.paise) + ' held back'
+        : 'nothing needs a decision') + '</div></div>'
+      + '</div>'
+      + (rec.orders.length ? '<div style="margin-top:14px">' + rec.orders.slice(0,5).map(o =>
+          '<div class="arow"><span class="oid">' + esc(o.order_id) + '</span>'
+          + '<span class="amt">' + rupees(o.amount_paise) + '</span>'
+          + '<span class="note">recovered</span></div>').join('') + '</div>' : '')
+      + (wait.orders.length ? '<div style="margin-top:14px">' + wait.orders.slice(0,5).map(o =>
+          '<div class="arow"><span class="oid">' + esc(o.order_id) + '</span>'
+          + '<span class="amt">' + rupees(o.amount_paise) + '</span>'
+          + '<button class="small ackbtn" data-order="' + esc(o.order_id) + '">I have handled it</button>'
+          + '<span class="why">' + esc(o.why) + '</span></div>').join('') + '</div>' : '')
+      + (!rec.count && !wait.count
+        ? '<p class="note" style="margin-top:12px">Nothing has needed doing since you were last here.</p>'
+        : '');
+  } catch (err) {
+    $('activityBody').innerHTML = '<div class="err">' + esc(err.message) + '</div>';
   }
+}
+
+const unlock = (id) => $(id).classList.remove('locked');
+const dot = (id, s) => { $(id).className = 'dot ' + s; };
+
+$('bConnect').onclick = async (e) => {
+  e.target.disabled = true;
+  try {
+    const d = await post('/api/connect/razorpay', {keyId: $('keyId').value, keySecret: $('keySecret').value});
+    if (d.error) { dot('d1','bad'); $('o1').innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+    dot('d1','good'); $('keySecret').value = '';
+    $('o1').innerHTML = '<div class="prov" style="color:var(--good)">Connected in Test Mode.</div>';
+    unlock('s2'); unlock('s3');
+  } finally { e.target.disabled = false; }
+};
+
+$('bHook').onclick = async (e) => {
+  e.target.disabled = true;
+  try {
+    const d = await post('/api/connect/webhook', {url: $('hookUrl').value});
+    if (d.error) { dot('d2','bad'); $('o2').innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+    dot('d2', d.confirmed ? 'good' : 'bad');
+    $('o2').innerHTML = '<div class="prov">Registered and confirmed by Razorpay. Five events subscribed.</div>';
+  } finally { e.target.disabled = false; }
+};
+
+const answers = {escalate_only: null, refund_policy: null};
+
+$('bDb').onclick = async (e) => {
+  e.target.disabled = true; e.target.textContent = 'Reading…';
+  try {
+    const d = await post('/api/connect/database', {databaseUrl: $('dbUrl').value});
+    if (d.error) { dot('d3','bad'); $('o3').innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+    dot('d3','good'); $('dbUrl').value = '';
+    $('o3').innerHTML = '<div class="prov">Read ' + d.tables.length + ' table(s).</div>';
+    unlock('s4');
+    const best = (d.proposals || []).filter(p => p.recommended);
+    $('o4').innerHTML = best.length
+      ? '<p class="note">Your orders look like they live in <code>' + esc(d.bestTable) + '</code>.</p>'
+        + best.map(p => '<div class="prop"><b>' + esc(p.eventType) + '</b>'
+          + '<div class="mapline">match on <code>' + esc(p.table) + '.' + esc(p.key.column) + '</code></div>'
+          + (Object.keys(p.set||{}).length ? '<div class="mapline">set ' + Object.keys(p.set).map(k=>'<code>'+esc(k)+'</code>').join(', ') + '</div>' : '')
+          + (Object.keys(p.add||{}).length ? '<div class="mapline">add ' + Object.keys(p.add).map(k=>'<code>'+esc(k)+'</code>').join(', ') + '</div>' : '')
+          + '</div>').join('')
+      : '<p class="note">No table here looks like an orders table. Raze will not guess which one it is.</p>';
+    $('qSide').classList.remove('hide');
+    $('qRefund').classList.remove('hide');
+  } finally { e.target.disabled = false; e.target.textContent = 'Read my schema'; }
+};
+
+document.addEventListener('click', (e) => {
+  const side = e.target.closest('[data-side]');
+  if (side) {
+    answers.escalate_only = side.dataset.side === 'yes';
+    $('qSide').querySelectorAll('button').forEach(b => b.classList.remove('primary'));
+    side.classList.add('primary');
+  }
+  const ref = e.target.closest('[data-refund]');
+  if (ref) {
+    answers.refund_policy = ref.dataset.refund;
+    $('qRefund').querySelectorAll('button').forEach(b => b.classList.remove('primary'));
+    ref.classList.add('primary');
+  }
+  if (side || ref) {
+    $('bConfirm').disabled = !(answers.escalate_only !== null && answers.refund_policy);
+  }
+});
+
+$('bConfirm').onclick = async (e) => {
+  e.target.disabled = true; e.target.textContent = 'Checking the last 24 hours…';
+  try {
+    await post('/api/setup/answers', Object.assign({}, answers, {mapping_confirmed: true}));
+    const d = await post('/api/setup/backfill', {});
+    if (d.error) { $('o5').innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+    dot('d4','good');
+    $('o5').innerHTML = '<div class="prov" style="color:var(--good)">Checked the last 24 hours: '
+      + d.checked + ' payment(s) at Razorpay, ' + (d.checked - d.missing)
+      + ' already in your system. '
+      + (d.missing ? '<b>' + d.missing + ' missing, ' + rupees(d.paise) + '.</b> I will take it from here.'
+                   : 'Nothing missing.') + '</div>';
+    setTimeout(showRunning, 1400);
+  } finally { e.target.disabled = false; e.target.textContent = 'Confirm and check the last 24 hours'; }
+};
+
+function showRunning() {
+  setupDone = true;
+  $('setup').classList.add('hide');
+  $('activity').classList.remove('hide');
+  $('chat').classList.remove('hide');
+  $('side').classList.remove('hide');
+  refreshActivity(); refreshState();
 }
 
 function bubble(who, html, cls) {
   const el = document.createElement('div');
   el.className = 'msg ' + (cls || who.toLowerCase());
-  el.innerHTML = `<div class="who">${esc(who)}</div><div class="what">${html}</div>`;
+  el.innerHTML = '<div class="who">' + esc(who) + '</div><div class="what">' + html + '</div>';
   $('thread').appendChild(el);
-  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('thread').scrollTop = $('thread').scrollHeight;
   return el;
 }
 
-// An order id in the answer becomes a button, because the next thing a merchant
-// wants after being told an order is stuck is to do something about it.
-function linkOrders(text) {
-  return esc(text).replace(/\b(order_[A-Za-z0-9]+)\b/g,
-    '<button class="orderbtn" data-order="$1">$1</button>');
-}
-
-async function askRaze(question) {
-  if (!question.trim()) return;
-  bubble('You', esc(question));
-  $('askInput').value = '';
-  const thinking = bubble('Raze', '<span class="dots">thinking</span>');
-  $('askBtn').disabled = true;
+async function ask(q) {
+  if (!q.trim()) return;
+  bubble('You', esc(q));
+  $('ask').value = '';
+  const t = bubble('Raze', '<span class="dots">thinking</span>');
+  $('bAsk').disabled = true;
   try {
-    const r = await fetch('/api/agent/ask', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ question }),
-    });
-    const d = await r.json();
-    thinking.querySelector('.what').innerHTML = linkOrders(d.text || 'No answer came back.');
-    if (!d.ok) thinking.classList.add('warnmsg');
-    refreshAgentState();
+    const d = await post('/api/agent/ask', {question: q});
+    t.querySelector('.what').innerHTML = md(d.text || 'No answer came back.');
+    $('thread').scrollTop = $('thread').scrollHeight;
+    refreshState();
   } catch (err) {
-    thinking.querySelector('.what').textContent = 'I could not answer: ' + err.message;
-  } finally { $('askBtn').disabled = false; }
+    t.querySelector('.what').textContent = 'I could not answer: ' + err.message;
+  } finally { $('bAsk').disabled = false; }
 }
+$('bAsk').onclick = () => ask($('ask').value);
+$('ask').onkeydown = (e) => { if (e.key === 'Enter') ask($('ask').value); };
+document.querySelectorAll('.chip').forEach(c => { c.onclick = () => ask(c.dataset.q); });
 
-$('askBtn').onclick = () => askRaze($('askInput').value);
-$('askInput').onkeydown = (e) => { if (e.key === 'Enter') askRaze($('askInput').value); };
-document.querySelectorAll('.chip').forEach((c) => {
-  c.onclick = () => askRaze(c.dataset.q);
-});
-
-// ---- recovery: the model proposes nothing here; the merchant clicks --------
 document.addEventListener('click', async (e) => {
+  const ack = e.target.closest('.ackbtn');
+  if (ack) { await post('/api/activity/ack', {order_id: ack.dataset.order}); refreshActivity(); return; }
   const btn = e.target.closest('.orderbtn');
   if (!btn) return;
   const order = btn.dataset.order;
-  bubble('You', 'recover ' + esc(order));
-  const pending = bubble('Raze', '<span class="dots">working out what that would change</span>');
-  try {
-    const plan = await (await fetch('/api/agent/propose', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ order_id: order }),
-    })).json();
-
-    if (plan.error) {
-      pending.querySelector('.what').innerHTML = `<span class="errtext">${esc(plan.error)}</span>`;
-      return;
-    }
-    pending.querySelector('.what').innerHTML =
-      `Here is what I would do to <b>${esc(order)}</b>:` +
-      `<ul class="plan">${plan.plan.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>` +
-      `<div class="planmeta">Razorpay payment <code>${esc(plan.payment.id)}</code>, ` +
-      `₹${(plan.payment.amount_paise / 100).toFixed(2)}, ${esc(plan.payment.status)}. ` +
-      `Nothing else changes.</div>` +
-      `<div class="planact"><button class="primary approve" data-order="${esc(order)}" ` +
-      `data-token="${esc(plan.approval_token)}">Approve</button>` +
-      `<button class="cancel">Leave it</button></div>`;
-  } catch (err) {
-    pending.querySelector('.what').textContent = 'I could not work that out: ' + err.message;
-  }
+  const p = bubble('Raze', '<span class="dots">working out what that would change</span>');
+  const plan = await post('/api/agent/propose', {order_id: order});
+  if (plan.error) { p.querySelector('.what').innerHTML = '<span class="errtext">' + esc(plan.error) + '</span>'; return; }
+  p.querySelector('.what').innerHTML =
+    'Here is what I would do to <b>' + esc(order) + '</b>:<ul class="plan">'
+    + plan.plan.map(s => '<li>' + esc(s) + '</li>').join('') + '</ul>'
+    + '<div class="note">Razorpay payment <code>' + esc(plan.payment.id) + '</code>, '
+    + rupees(plan.payment.amount_paise) + '. Nothing else changes.</div>'
+    + '<div class="planact"><button class="primary approve" data-order="' + esc(order) + '" '
+    + 'data-token="' + esc(plan.approval_token) + '">Approve</button>'
+    + '<button class="cancel">Leave it</button></div>';
 });
 
 document.addEventListener('click', async (e) => {
@@ -878,28 +484,20 @@ document.addEventListener('click', async (e) => {
   if (!ok) return;
   const act = ok.closest('.planact');
   act.innerHTML = '<span class="note">applying…</span>';
-  try {
-    const d = await (await fetch('/api/agent/apply', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ order_id: ok.dataset.order, approval_token: ok.dataset.token }),
-    })).json();
-    if (d.error) {
-      act.innerHTML = `<span class="errtext">${esc(d.error)}</span>`;
-      return;
-    }
-    act.innerHTML = `<span class="oktext">Done. ${esc(ok.dataset.order)} is paid, ` +
-      `₹${(d.merchant_now.credited_paise / 100).toFixed(2)}.</span>`;
-    refreshAgentState();
-    refreshState();
-  } catch (err) {
-    act.innerHTML = `<span class="errtext">${esc(err.message)}</span>`;
-  }
+  const d = await post('/api/agent/apply', {order_id: ok.dataset.order, approval_token: ok.dataset.token});
+  act.innerHTML = d.error
+    ? '<span class="errtext">' + esc(d.error) + '</span>'
+    : '<span class="oktext">Done. ' + esc(ok.dataset.order) + ' is paid, '
+      + rupees(d.merchant_now.credited_paise) + '.</span>';
+  refreshState(); refreshActivity();
 });
 
-refreshAgentState();
-setInterval(refreshAgentState, 60000);
-
-refreshState();
+(async () => {
+  const s = await (await fetch('/api/setup')).json();
+  if (s.complete) showRunning();
+  refreshState();
+  setInterval(() => { if (setupDone) { refreshActivity(); refreshState(); } }, 30000);
+})();
 </script>
 </body>
 </html>

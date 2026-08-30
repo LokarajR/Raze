@@ -37,6 +37,54 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
     console.log('  ctrl-c to stop\n');
   });
 
+  // Once setup is done, Raze runs. The console is somewhere to look at what it
+  // did, not the thing that makes it happen — so the loops start here and keep
+  // going whether or not anyone has the page open.
+  try {
+    const { createLoops } = require(path.join(RAZE, 'src', 'loops'));
+    const actions = require(path.join(RAZE, 'src', 'actions'));
+    await actions.ensure(pool);
+    const setup = await pool.query(
+      `SELECT * FROM raze_setup WHERE id = 1`).catch(() => ({ rows: [] }));
+    const row = setup.rows[0];
+    const ready = row && row.backfill_at && row.mapping_confirmed
+      && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET;
+    if (ready) {
+      const loops = createLoops({
+        pool,
+        razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
+        merchant: {
+          mappingConfirmed: true,
+          escalateOnly: !!row.escalate_only,
+          autoRepair: true,
+        },
+        columns: {
+          key: env.RAZE_ORDER_KEY_COLUMN || 'order_id',
+          status: env.RAZE_STATUS_COLUMN || 'status',
+          amount: env.RAZE_AMOUNT_COLUMN || 'credited_paise',
+          expected: env.RAZE_EXPECTED_COLUMN || null,
+        },
+        ordersTable: env.RAZE_ORDERS_TABLE || 'shop_orders',
+        logFile: require('fs').existsSync(path.join(RAZE, 'measurement', 'deliveries.jsonl'))
+          ? path.join(RAZE, 'measurement', 'deliveries.jsonl') : null,
+        onEvent: (e) => {
+          if (e.type === 'recovered' || e.type === 'escalated') {
+            console.log(`  ${e.type.padEnd(10)} ${e.orderId}`);
+          }
+        },
+      });
+      await loops.start();
+      console.log(`  running        reconcile ${loops.config.reconcileMs / 1000}s, `
+        + `sweep ${loops.config.sweepMs / 1000}s
+`);
+      process.on('SIGINT', () => loops.stop());
+    } else {
+      console.log('  setup          not finished — nothing is being watched yet\n');
+    }
+  } catch (err) {
+    console.log(`  loops          could not start: ${err.message}\n`);
+  }
+
   // A deploy or a crash restarts this process; whatever was armed before it
   // should still be armed after. A failure to restore is reported and left
   // disarmed rather than pretended away.
