@@ -24,15 +24,10 @@ const LOG = [
 ].find((p) => fs.existsSync(p));
 const PORT = Number(process.env.AUDIT_TEST_PORT || 4177);
 
-function loadEnv() {
-  const out = {};
-  const raw = fs.readFileSync(path.join(ROOT, 'probe-server', '.env'), 'utf8');
-  for (const line of raw.split('\n')) {
-    const i = line.indexOf('=');
-    if (i > 0 && !line.trim().startsWith('#')) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-  }
-  return out;
-}
+const { loadEnv, signing } = require('./env');
+
+// Assigned in main(), before any fixture is built.
+let signer;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -100,6 +95,9 @@ const show = (mode, results) => {
 
 async function main() {
   const env = loadEnv();
+  signer = signing(env);
+  // Downstream code reads the secret off env; keep the two in step.
+  env.RAZORPAY_WEBHOOK_SECRET = signer.secret;
   const { pool, url } = await connect();
   await migrate(pool);
   await pool.query(require('../examples/demo-merchant/server').MERCHANT_SCHEMA);

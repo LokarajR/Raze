@@ -52,21 +52,10 @@ function rng(seed) {
   };
 }
 
-function loadEnv() {
-  const out = {};
-  for (const p of [path.join(__dirname, '..', '.env'), path.join(ROOT, 'probe-server', '.env')]) {
-    try {
-      for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
-        const i = line.indexOf('=');
-        if (i > 0 && !line.trim().startsWith('#')) {
-          const k = line.slice(0, i).trim();
-          if (!(k in out)) out[k] = line.slice(i + 1).trim();
-        }
-      }
-    } catch {}
-  }
-  return { ...out, ...process.env };
-}
+const { loadEnv, signing } = require('./env');
+
+// Assigned in main(), before any fixture is built.
+let signer;
 
 /** Distinct captured payments, each with its full real retry ladder. */
 function ladders() {
@@ -92,7 +81,7 @@ function ladders() {
       attempts: v.map((d) => ({
         body: Buffer.from(d.raw_body_b64, 'base64'),
         eventId: d.event_id,
-        signature: d.signature,
+        signature: signer.forBytes(Buffer.from(d.raw_body_b64, 'base64'), d.signature),
       })),
     });
   }
@@ -109,6 +98,9 @@ const check = (name, cond, detail) => {
 
 async function main() {
   const env = loadEnv();
+  signer = signing(env);
+  // Downstream code reads the secret off env; keep the two in step.
+  env.RAZORPAY_WEBHOOK_SECRET = signer.secret;
   const rand = rng(SEED);
   const { pool, url: dbUrl } = await connect();
   await migrate(pool);

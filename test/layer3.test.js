@@ -20,15 +20,7 @@ const { createReconciler } = require('../src/reconcile');
 
 const ROOT = path.join(__dirname, '..', '..');
 
-function loadEnv() {
-  const out = {};
-  const raw = fs.readFileSync(path.join(ROOT, 'probe-server', '.env'), 'utf8');
-  for (const line of raw.split('\n')) {
-    const i = line.indexOf('=');
-    if (i > 0 && !line.trim().startsWith('#')) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-  }
-  return out;
-}
+const { loadEnv } = require('./env');
 
 let pass = 0, fail = 0;
 const check = (name, cond, detail) => {

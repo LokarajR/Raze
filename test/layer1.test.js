@@ -22,15 +22,10 @@ const LOG = [
   path.join(ROOT, 'deliveries.jsonl'),
 ].find((p) => fs.existsSync(p));
 
-function loadEnv() {
-  const out = {};
-  const raw = fs.readFileSync(path.join(ROOT, 'probe-server', '.env'), 'utf8');
-  for (const line of raw.split('\n')) {
-    const i = line.indexOf('=');
-    if (i > 0 && !line.trim().startsWith('#')) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-  }
-  return out;
-}
+const { loadEnv, signing } = require('./env');
+
+// Assigned in main(), before any fixture is built.
+let signer;
 
 function fixtures() {
   const rows = fs.readFileSync(LOG, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
@@ -54,7 +49,7 @@ function pickLadder(byKey, eventType) {
   return best.map((d) => ({
     body: Buffer.from(d.raw_body_b64, 'base64'),
     eventId: d.event_id,
-    signature: d.signature,
+    signature: signer.forBytes(Buffer.from(d.raw_body_b64, 'base64'), d.signature),
     eventType: d.event_type,
   }));
 }
@@ -72,7 +67,7 @@ function pickLifecycle(byKey) {
       return {
         body: Buffer.from(d.raw_body_b64, 'base64'),
         eventId: d.event_id,
-        signature: d.signature,
+        signature: signer.forBytes(Buffer.from(d.raw_body_b64, 'base64'), d.signature),
         eventType: d.event_type,
       };
     });
@@ -87,9 +82,13 @@ function check(name, cond, detail) {
 
 async function main() {
   const env = loadEnv();
+  signer = signing(env);
+  // Downstream code reads the secret off env; keep the two in step.
+  env.RAZORPAY_WEBHOOK_SECRET = signer.secret;
   const { pool, embedded } = await connect();
   await migrate(pool);
-  console.log(`\nLayer 1 tests  (postgres: ${embedded ? 'embedded' : 'DATABASE_URL'})\n`);
+  console.log(`\nLayer 1 tests  (postgres: ${embedded ? 'embedded' : 'DATABASE_URL'})`);
+  console.log(signer.banner() + '\n');
 
   // Merchant's own table. Raze never writes to it — the handler does.
   await pool.query(`CREATE TABLE IF NOT EXISTS demo_orders (

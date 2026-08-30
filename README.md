@@ -515,9 +515,26 @@ with the process.
 npm run test:offline
 ```
 
-The layers that need no network: the runtime, the audit probes, the declarative
+58 assertions across six layers: the runtime, the audit probes, the declarative
 mappings, the learning discipline, the pattern detector. No credentials, no
 model, nothing to configure.
+
+The bundled deliveries in `measurement/` are real captured bytes, but the secret
+they were signed under is not in this repository and never will be. Rather than
+switch signature verification off — the one check Layer 1 exists to make — the
+suite re-signs those same bytes with a test secret when it finds no credentials,
+and says which mode it ran in:
+
+```
+signatures: no credentials on this machine — the same captured bytes,
+            re-signed with a test secret. Verification is still real.
+```
+
+The HMAC path, the raw-byte handling and the rejection of forged and truncated
+bodies are exercised either way. The single claim that needs the real secret is
+that these exact bytes came from Razorpay, which is a fact about the corpus, not
+a code path in Raze. With `RAZORPAY_WEBHOOK_SECRET` set, the captured signatures
+are used as-is and that claim is tested too.
 
 ```bash
 npm run chaos
@@ -577,10 +594,15 @@ somewhere your user cannot write, usually `C:\Windows\System32` from an elevated
 PowerShell. Move it: `cd ~; git clone ...` and run again. Administrator is never
 needed.
 
-**`pre-existing shared memory block is still in use`** — a previous run left
-Postgres up. `taskkill /F /IM postgres.exe` on Windows, `pkill postgres`
-elsewhere, then retry. The suite starts one server for all ten layers, so this
-only happens after an interrupted run.
+**`pre-existing shared memory block is still in use`** — an interrupted run left
+a Postgres child alive holding the shared memory segment. Raze now clears this
+itself on the next start, and only ever stops Postgres processes launched from
+this checkout's own `node_modules` — a system Postgres, or another checkout's, is
+never touched. If you see this message at all, run the command again.
+
+**Two checkouts on one machine** — the embedded server takes the first free port
+from 55432 rather than a fixed one, so a second clone does not collide with the
+first. `RAZE_PG_PORT=55500` pins it if you would rather choose.
 
 **Port already in use** — `DEMO_PORT=4500 npm run demo`, or `raze up --port 4500`.
 

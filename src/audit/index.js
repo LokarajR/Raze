@@ -76,11 +76,21 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
   async function send(f, overrides = {}) {
     const headers = { 'content-type': 'application/json' };
     const eid = overrides.eventId !== undefined ? overrides.eventId : f.eventId;
-    const sig = overrides.signature !== undefined ? overrides.signature : f.signature;
+    const body = overrides.body || f.body;
+    // Sign each probe with the secret the target is configured with, rather than
+    // replaying the signature captured with the corpus. For the secret the
+    // corpus was recorded under these are the same bytes — a Razorpay signature
+    // is HMAC-SHA256 of the raw body under the webhook secret — but a merchant
+    // audited with its own secret would reject every replayed signature with a
+    // 401, and the audit would report a broken integration that is fine.
+    const signed = webhookSecret
+      ? crypto.createHmac('sha256', webhookSecret).update(body).digest('hex')
+      : f.signature;
+    const sig = overrides.signature !== undefined ? overrides.signature : signed;
     if (eid) headers['x-razorpay-event-id'] = eid;
     if (sig) headers['x-razorpay-signature'] = sig;
     try {
-      const res = await fetch(targetUrl, { method: 'POST', headers, body: overrides.body || f.body });
+      const res = await fetch(targetUrl, { method: 'POST', headers, body });
       await res.text();
       return { status: res.status };
     } catch (err) {
