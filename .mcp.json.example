@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "raze": {
+      "command": "node",
+      "args": ["/absolute/path/to/Raze/bin/raze-mcp"],
+      "env": {
+        "DATABASE_URL": "postgres://user:pass@host:5432/your_database",
+        "RAZORPAY_KEY_ID": "rzp_test_xxxxxxxx",
+        "RAZORPAY_KEY_SECRET": "xxxxxxxx",
+        "RAZE_ORDERS_TABLE": "orders"
+      }
+    }
+  }
+}

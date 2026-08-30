@@ -226,6 +226,68 @@ test would be a form of simulation.
 zero findings, every time, and the test suite asserts exactly that. A detector
 that fires on correct code is worse than no detector.
 
+## Use Raze as an agent
+
+Razorpay's Agentic Integration ends when the merchant's code is written. Raze
+begins when that code is running and reality stops cooperating.
+
+```bash
+git clone https://github.com/LokarajR/Raze.git
+cd Raze && npm install
+cp .env.example .env        # your Razorpay Test Mode keys, your DATABASE_URL
+node bin/raze agent
+```
+
+`raze agent` checks the database is reachable, checks Razorpay accepts the keys,
+and writes `.mcp.json`. It refuses to write anything if either check fails — a
+config that looks right and does not work costs more than no config. The file is
+gitignored because it holds the merchant's credentials.
+
+Restart Claude Code in that directory and ask:
+
+```
+is everything alright?
+```
+
+It runs on a Claude Pro subscription. The server is spawned locally over stdio,
+so there is no API key and no hosted endpoint. For Claude Desktop, copy the
+`mcpServers` block from `.mcp.json` into its config instead.
+
+### What it connects to, and what it does not
+
+Raze needs two things, and neither of them is the merchant's source code:
+
+| It needs | Why |
+|---|---|
+| `DATABASE_URL` | The question is whether *their* order state is correct. That lives in their database. |
+| Razorpay Test Mode keys | To ask Razorpay what it actually recorded, which is the comparison everything rests on. |
+
+It reads their schema and works out which table holds orders and which column
+carries the Razorpay order id. It does not read, modify or deploy their
+application. There is no SDK to install and no handler to rewrite.
+
+### What "takes over" honestly means
+
+Three different things, and they are worth telling apart:
+
+**Watching** happens with no change to the merchant's code at all. Raze
+reconciles against Razorpay, watches for orders whose payment never arrives, and
+reports where the two disagree. Their integration keeps running exactly as it is.
+
+**Applying** — where Raze becomes the thing that writes payment state — needs
+their webhook pointed at a Raze endpoint. From then on deliveries land in the
+inbox first: deduplicated on Razorpay's event id, ordered by a state machine, and
+applied to their table through a declarative mapping inside one transaction. Their
+handler can be deleted or left in place; the mapping does not need it.
+
+**Repairing** is always a delivery, never an UPDATE. An approved recovery
+synthesizes the event Razorpay would have sent and puts it through the same
+worker as live traffic — one event identity per payment, shared with
+reconciliation, so neither path can credit the same money twice.
+
+What it does not do: touch live-mode money, change anything without an approved
+plan, or claim to have prevented a failure it only detected.
+
 ## Raze as an MCP server
 
 ```bash

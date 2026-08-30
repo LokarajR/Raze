@@ -36,7 +36,12 @@ const { MERCHANT_SCHEMA } = require(path.join(RAZE, 'examples', 'demo-merchant',
 // ---------------------------------------------------------------------------
 const argv = process.argv.slice(2);
 const cmd = argv[0];
+// Accepts both `--name value` and `--name=value`. The second form is what most
+// people reach for, and silently ignoring it produced a flag that looked set and
+// was not.
 const flag = (name, dflt) => {
+  const eq = argv.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.slice(name.length + 3);
   const i = argv.indexOf(`--${name}`);
   return i === -1 ? dflt : (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true);
 };
@@ -406,6 +411,7 @@ const commands = {
   watch: async () => require(path.join(RAZE, 'src', 'watch-command'))({
     flag, has, RAZE, deps: { connect, migrate, shutdown },
   }),
+  agent: async () => require(path.join(RAZE, 'src', 'agent-setup'))({ env, flag, RAZE }),
   web: async () => require(path.join(RAZE, 'src', 'web-command'))({
     env, flag, RAZE, deps: { connect, migrate, shutdown },
   }),

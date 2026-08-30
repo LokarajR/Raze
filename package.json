@@ -12,7 +12,8 @@
     "live:public": "node test/live-public.js",
     "chaos": "node test/layer10.test.js",
     "web": "node bin/raze web",
-    "mcp": "node bin/raze-mcp"
+    "mcp": "node bin/raze-mcp",
+    "agent": "node bin/raze agent"
   },
   "keywords": [],
   "author": "",
