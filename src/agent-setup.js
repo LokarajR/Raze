@@ -24,12 +24,22 @@
 
 const fs = require('fs');
 const path = require('path');
+const LOG = [
+  path.join(__dirname, '..', 'measurement', 'deliveries.jsonl'),
+  path.join(__dirname, '..', '..', 'deliveries.jsonl'),
+].find((p) => { try { return fs.existsSync(p); } catch { return false; } });
 
 module.exports = async function cmdAgent({ env, flag, RAZE }) {
   const out = path.join(RAZE, '.mcp.json');
   const dbUrl = flag('database-url', env.DATABASE_URL || process.env.DATABASE_URL || '');
   const table = flag('orders-table', env.RAZE_ORDERS_TABLE || 'orders');
   const keyId = env.RAZORPAY_KEY_ID || '';
+  // Filled in from the merchant's own schema below; these are only fallbacks.
+  const columns = {
+    key: env.RAZE_ORDER_KEY_COLUMN || 'order_id',
+    status: env.RAZE_STATUS_COLUMN || 'status',
+    amount: env.RAZE_AMOUNT_COLUMN || 'credited_paise',
+  };
   const keySecret = env.RAZORPAY_KEY_SECRET || '';
 
   console.log('');
@@ -55,6 +65,29 @@ module.exports = async function cmdAgent({ env, flag, RAZE }) {
         console.log(`              or pass --orders-table=<name>`);
       } else {
         console.log(`  orders      "${table}"`);
+        // Writing the table name and leaving the columns at their defaults sent
+        // the merchant straight to MISMATCHED on their first question: order_id
+        // and credited_paise are the demo merchant's names, not theirs. Derive
+        // them from the same inference that produces the mapping.
+        try {
+          const infer = require(path.join(RAZE, 'src', 'infer'));
+          const { proposals } = await infer.infer({ pool, corpusPath: LOG });
+          const p = proposals.find(
+            (x) => x.eventType === 'payment.captured' && x.spec.table === table);
+          if (p) {
+            const setCols = Object.keys(p.spec.set || {});
+            const addCols = Object.keys(p.spec.add || {});
+            columns.key = p.spec.key.column;
+            columns.status = setCols[0] || columns.status;
+            columns.amount = addCols.find((c) => /paise|amount|total/i.test(c)) || columns.amount;
+            console.log(`  columns     ${columns.key} · ${columns.status} · ${columns.amount}`);
+          } else {
+            console.log(`  columns     could not work them out from "${table}" — `
+              + 'run `raze infer` and set them by hand');
+          }
+        } catch (err) {
+          console.log(`  columns     could not read the schema: ${err.message}`);
+        }
       }
     } catch (err) {
       problems.push(`Database unreachable: ${err.message}`);
@@ -104,6 +137,9 @@ module.exports = async function cmdAgent({ env, flag, RAZE }) {
           RAZORPAY_KEY_ID: keyId,
           RAZORPAY_KEY_SECRET: keySecret,
           RAZE_ORDERS_TABLE: table,
+          RAZE_ORDER_KEY_COLUMN: columns.key,
+          RAZE_STATUS_COLUMN: columns.status,
+          RAZE_AMOUNT_COLUMN: columns.amount,
         },
       },
     },
