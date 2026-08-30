@@ -27,6 +27,7 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
   // The CLI reads .env into its own object rather than into process.env, so a
   // value set there was invisible here — Raze reported having no public address
   // while one was configured two lines away.
+  S.port = port;
   S.publicUrl = process.env.PUBLIC_URL || env.RAZE_PUBLIC_URL
     || process.env.RAZE_PUBLIC_URL || null;
 
@@ -116,6 +117,7 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
     // Tell the exit handler this kill was asked for, so it does not treat the
     // merchant dying during shutdown as a crash and restart it.
     S.stopping = true;
+    if (S.tunnel && S.tunnel.stop) S.tunnel.stop();
     await stopMerchant();
     await shutdown(pool);
     process.exit(0);

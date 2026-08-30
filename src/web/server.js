@@ -1133,6 +1133,25 @@ function createApp({ pool, databaseUrl, env }) {
       // or an event list, because none of those are things they should have to
       // know.
       if (step.id === 'webhook') {
+        // If there is no address Razorpay can reach, get one rather than
+        // reporting the problem. A merchant should not have to know what a
+        // tunnel is, and telling them to install one is the sort of homework
+        // this project exists to remove.
+        if (!S.publicUrl && !process.env.RAZE_PUBLIC_URL && !CONNECT.tunnelTried) {
+          CONNECT.tunnelTried = true;
+          try {
+            const tunnel = require(path.join(RAZE, 'src', 'agent', 'tunnel'));
+            const t = await tunnel.open(S.port || 7000);
+            if (t.ok) {
+              S.publicUrl = t.url;
+              S.tunnel = t;
+              CONNECT.tunnelOpened = t.url;
+            } else {
+              CONNECT.tunnelWhy = t.why;
+            }
+          } catch (err) { CONNECT.tunnelWhy = err.message; }
+        }
+
         if (!CONNECT.understood) {
           const { understand } = require(path.join(RAZE, 'src', 'agent', 'understand'));
           try { CONNECT.understood = await understand(CONNECT.merchantPool || pool); }
@@ -1148,6 +1167,10 @@ function createApp({ pool, databaseUrl, env }) {
           + 'id, and survives events arriving out of order.\n\nI will do all of it. '
           + 'Your schema can record ' + wanted.length + ' kind(s) of event, so those are the '
           + 'ones I will subscribe to and no others.';
+        if (CONNECT.tunnelOpened) {
+          step.say += '\n\nRazorpay will not deliver to a laptop, so I opened a public '
+            + 'address for this console myself — nothing for you to install.';
+        }
         step.events = wanted;
         step.action = 'Build it';
         step.values = {};
