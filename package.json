@@ -13,7 +13,8 @@
     "chaos": "node test/layer10.test.js",
     "web": "node bin/raze web",
     "mcp": "node bin/raze-mcp",
-    "agent": "node bin/raze agent"
+    "agent": "node bin/raze agent",
+    "run:agent": "node bin/raze run"
   },
   "keywords": [],
   "author": "",
