@@ -7,7 +7,9 @@
     "demo": "node bin/raze demo --sever-delivery",
     "test": "node test/run-all.js",
     "test:offline": "node test/run-all.js --offline",
-    "demo:public": "node examples/public-merchant/lost-payment.js"
+    "demo:public": "node examples/public-merchant/lost-payment.js",
+    "eval:public": "node test/evaluate-public.js",
+    "live:public": "node test/live-public.js"
   },
   "keywords": [],
   "author": "",
