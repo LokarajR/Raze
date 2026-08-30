@@ -349,6 +349,11 @@ function cmdHelp() {
 raze — keeps merchant business state correct when webhook delivery is
        duplicated, delayed, rejected, or absent.
 
+  raze up [--url URL]         everything, in one run: migrate, derive mappings,
+                              register the webhook, arm expectations, backfill
+                              history, then run. --dry-run shows it all first.
+                              --orders TABLE --key COLUMN to watch for orders
+                              that are never paid.
   raze setup --url URL        build the whole integration: read your schema,
                               propose the mapping, generate a secret, register
                               the webhook with Razorpay. --dry-run shows it all
@@ -388,6 +393,9 @@ Diagnosis and verification are always deterministic; only repair is generated.
 
 const commands = {
   gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile, infer: cmdInfer,
+  up: async () => require(path.join(RAZE, 'src', 'up-command'))({
+    env, flag, has, LOG, RAZE, deps: { connect, migrate, shutdown },
+  }),
   scan: async () => require(path.join(RAZE, 'src', 'scan-command'))({ flag, RAZE }),
   backfill: async () => require(path.join(RAZE, 'src', 'backfill-command'))({
     env, flag, has, RAZE, deps: { connect, migrate, shutdown },

@@ -207,6 +207,66 @@ async function main() {
   check('a second pass over the same ground repairs nothing',
     r3.ok && r3.repaired === 0, JSON.stringify({ drift: r3.drift, repaired: r3.repaired }));
 
+  // ---- 6. the outbox delivers effects that cannot join the transaction ---
+  await reset();
+  const { createOutbox } = require('../src/outbox');
+  const outbox = createOutbox({ db: pool, config: { maxAttempts: 3, baseBackoffMs: 1 } });
+
+  const sent = [];
+  outbox.on('email', async (payload, meta) => {
+    sent.push({ payload, key: meta.idempotencyKey });
+  });
+
+  await pool.query(
+    `INSERT INTO raze_outbox (idempotency_key, effect_type, payload)
+     VALUES ('receipt-1','email','{"to":"a@example.com"}'::jsonb)`
+  );
+  const d1 = await outbox.drain();
+  check('an effect is delivered and marked delivered',
+    d1.delivered === 1 && sent.length === 1 && sent[0].key === 'receipt-1',
+    JSON.stringify({ d1, sent: sent.length }));
+
+  const d2 = await outbox.drain();
+  check('a delivered effect is not delivered again',
+    d2.delivered === 0 && sent.length === 1, JSON.stringify({ d2, sent: sent.length }));
+
+  // A duplicate business effect cannot even be queued twice.
+  const dup = await pool.query(
+    `INSERT INTO raze_outbox (idempotency_key, effect_type, payload)
+     VALUES ('receipt-1','email','{"to":"a@example.com"}'::jsonb)
+     ON CONFLICT (idempotency_key) DO NOTHING`
+  );
+  check('the idempotency key prevents the same effect being queued twice',
+    dup.rowCount === 0, `inserted=${dup.rowCount}`);
+
+  // A failing sender must back off and eventually stop, not spin.
+  outbox.on('shipping', async () => { throw new Error('carrier unavailable'); });
+  await pool.query(
+    `INSERT INTO raze_outbox (idempotency_key, effect_type, payload)
+     VALUES ('ship-1','shipping','{}'::jsonb)`
+  );
+  for (let i = 0; i < 6; i++) {
+    await pool.query(`UPDATE raze_outbox SET next_attempt_at = NULL WHERE delivered_at IS NULL`);
+    await outbox.drain();
+  }
+  const st = await outbox.status();
+  check('a permanently failing effect stops after max attempts and is reported',
+    st.exhausted === 1 && st.pending === 1 && /carrier unavailable/.test(st.last_error || ''),
+    JSON.stringify(st));
+
+  // An effect nobody can deliver is recorded, not retried into the ground.
+  await pool.query(
+    `INSERT INTO raze_outbox (idempotency_key, effect_type, payload)
+     VALUES ('sms-1','sms','{}'::jsonb)`
+  );
+  const r = await outbox.deliverOne();
+  const noSender = await pool.query(
+    `SELECT last_error FROM raze_outbox WHERE idempotency_key = 'sms-1'`
+  );
+  check('an effect with no registered sender says so rather than failing silently',
+    r && r.reason === 'no sender' && /no sender registered/.test(noSender.rows[0].last_error),
+    JSON.stringify({ r, err: noSender.rows[0] && noSender.rows[0].last_error }));
+
   await reset();
   await shutdown(pool);
   console.log(`\n${pass}/${pass + fail} passed\n`);

@@ -70,6 +70,16 @@ async function startEmbedded({ attempts = 4 } = {}) {
 async function connect() {
   const url = process.env.DATABASE_URL || (await startEmbedded());
   const pool = new Pool({ connectionString: url, max: 8 });
+
+  // An idle client losing its connection emits 'error' on the pool. Unhandled,
+  // that is an uncaught exception and the process dies — so a database restart,
+  // a network blip or a failover would take down the very daemon that is
+  // supposed to guarantee nothing is lost. The pool discards the broken client
+  // and hands out a fresh one; the next query reconnects. Logged, not fatal.
+  pool.on('error', (err) => {
+    console.error(`postgres connection dropped: ${err.message} (pool will reconnect)`);
+  });
+
   // Fail fast and clearly rather than surfacing a socket error mid-transaction.
   await pool.query('SELECT 1');
   return { pool, url, embedded: !process.env.DATABASE_URL };

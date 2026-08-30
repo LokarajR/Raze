@@ -168,7 +168,34 @@ function createLedger(opts) {
     return { armed: !!timer, ...r.rows[0] };
   }
 
-  return { sweepOnce, lookup, start, stop, status, config: cfg };
+  /**
+   * What deadline this merchant's own traffic justifies.
+   *
+   * Fifteen minutes is a guess, and a guessed deadline is how a ledger produces
+   * false abandonments: an order that takes twenty minutes to pay gets reported
+   * as never paid. The p99 of real fulfilments is a measurement, and it is only
+   * offered once there are enough of them to mean anything.
+   */
+  async function suggestedDeadline() {
+    const learn = require('../learn');
+    const f = await learn.fulfilmentBehaviour(pool);
+    if (!f.enough) {
+      return {
+        enough: false,
+        samples: f.duration.n,
+        reason: `only ${f.duration.n} fulfilment(s) observed — not enough to derive a deadline`,
+      };
+    }
+    return {
+      enough: true,
+      samples: f.duration.n,
+      p99Ms: f.duration.p99,
+      suggestedMs: f.suggestedDeadlineMs,
+      because: `p99 of ${f.duration.n} real fulfilments is ${(f.duration.p99 / 1000).toFixed(1)}s, plus 50% headroom`,
+    };
+  }
+
+  return { sweepOnce, lookup, start, stop, status, suggestedDeadline, config: cfg };
 }
 
 module.exports = { createLedger, DEFAULTS };
