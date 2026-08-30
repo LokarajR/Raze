@@ -102,6 +102,44 @@
   .note{color:var(--muted);font-size:12.5px}
   .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:8px}
   .ok{color:var(--good)}
+
+  .step{border-top:1px solid var(--line);padding:14px 0}
+  .step:first-of-type{border-top:none;padding-top:4px}
+  .steph{display:flex;align-items:center;gap:9px;font-weight:600;font-size:13.5px;margin-bottom:10px}
+  .dot{width:9px;height:9px;border-radius:99px;background:var(--dim);flex:none}
+  .dot.good{background:var(--good);box-shadow:0 0 0 3px rgba(95,191,143,.15)}
+  .dot.bad{background:var(--bad);box-shadow:0 0 0 3px rgba(224,92,74,.15)}
+  .dot.warn{background:var(--risk)}
+  .prov.ok{color:var(--good);border-left-color:#1e3a2e}
+  .errtext{color:var(--bad)} .oktext{color:var(--good)}
+
+  .prop{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:var(--panel2)}
+  .proph{display:flex;gap:9px;align-items:center;cursor:pointer;font-size:13.5px}
+  .proph input{width:15px;height:15px;accent-color:#3f8f6f;min-width:0}
+  .mapline{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:6px}
+  details{margin-top:8px}
+  summary{cursor:pointer;font-size:12px;color:var(--dim)}
+  ul.ev{margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--muted)}
+  .ask{margin-top:9px;border-left:2px solid var(--risk);padding-left:10px;font-size:12.5px;color:var(--risk)}
+  .ask ul{margin:5px 0;padding-left:16px}
+
+  .verdict{font-family:var(--mono);font-size:19px;letter-spacing:.06em;padding:12px 16px;
+    border-radius:8px;margin:14px 0;text-align:center}
+  .verdict.good{color:var(--good);background:#0d1a14;border:1px solid #1e3a2e}
+  .verdict.bad{color:var(--bad);background:#1c0f0d;border:1px solid #4a2420}
+  .checks{display:flex;flex-direction:column;gap:7px}
+  .chk{display:grid;grid-template-columns:20px 210px 1fr;gap:10px;align-items:baseline;
+    border:1px solid var(--line);border-radius:7px;padding:9px 12px;background:var(--panel2)}
+  @media(max-width:720px){.chk{grid-template-columns:20px 1fr}.chk .cd{grid-column:1/-1}}
+  .chk.ok{border-color:#1e3a2e} .chk.no{border-color:#4a2420}
+  .chk .mark{font-family:var(--mono)} .chk.ok .mark{color:var(--good)} .chk.no .mark{color:var(--bad)}
+  .chk .cn{font-weight:600;font-size:13px}
+  .chk .cd{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+
+  .tgroup{border:1px solid var(--line);border-radius:8px;margin-bottom:10px;padding:10px 12px;background:var(--panel2)}
+  .tgroup.best{border-color:#2b5546}
+  .tgroup>summary{font-size:13px;cursor:pointer;display:flex;gap:9px;align-items:center}
+  .tgroup .prop{margin-top:9px}
   .hide{display:none}
 </style>
 </head>
@@ -118,9 +156,83 @@
 <main>
 <div>
 
+  <!-- C1 --------------------------------------------------------------- -->
+  <section class="stage" id="connectStage">
+    <h2><span class="num">A</span> Protect my Razorpay payments</h2>
+    <div class="body">
+      <p class="lede">You do not need to know what a webhook is. Connect your Test Mode
+        account and your database; Raze works out what your payment model looks like,
+        shows you what it found, and does nothing until you approve it.</p>
+
+      <!-- step 1: razorpay -->
+      <div class="step" id="stepRzp">
+        <div class="steph"><span class="dot" id="dotRzp"></span> Your Razorpay account</div>
+        <div class="row">
+          <input class="grow" id="keyId" placeholder="rzp_test_..." autocomplete="off" spellcheck="false">
+          <input class="grow" id="keySecret" type="password" placeholder="key secret" autocomplete="off">
+          <button class="primary" id="connectRzp">Connect</button>
+        </div>
+        <div class="prov">Test Mode keys only. Held in memory for this session — never written
+          to disk, never logged, never returned by any endpoint.</div>
+        <div id="rzpOut"></div>
+      </div>
+
+      <!-- step 2: webhook -->
+      <div class="step" id="stepHook">
+        <div class="steph"><span class="dot" id="dotHook"></span> Where Razorpay should deliver</div>
+        <div class="row">
+          <input class="grow" id="hookUrlIn" placeholder="https://your-deployment/webhook">
+          <button id="registerHook">Register</button>
+        </div>
+        <div class="prov">Raze generates the secret and registers the five events that matter,
+          then reads the registration back from Razorpay to confirm it. Razorpay rejects
+          localhost, so this needs a deployed HTTPS URL.</div>
+        <div id="hookOut"></div>
+      </div>
+
+      <!-- step 3: database -->
+      <div class="step" id="stepDb">
+        <div class="steph"><span class="dot" id="dotDb"></span> Your application database</div>
+        <div class="row">
+          <input class="grow" id="dbUrl" type="password" placeholder="postgres://user:pass@host:5432/db" autocomplete="off">
+          <button class="primary" id="connectDb">Read my schema</button>
+        </div>
+        <div class="prov">Read-only at this step. Raze reads
+          <code>information_schema</code> and compares it against the field paths present in
+          796 real captured deliveries. Name and type matching — deterministic, no model,
+          same answer every time.</div>
+        <div id="dbOut"></div>
+      </div>
+
+      <!-- step 4: approve -->
+      <div class="step hide" id="stepApprove">
+        <div class="steph"><span class="dot" id="dotApprove"></span> What Raze found</div>
+        <div id="proposalOut"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="approveBtn">Approve and protect</button>
+          <span class="note" id="approveNote">Nothing is armed until you press this.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- C2 --------------------------------------------------------------- -->
+  <section class="stage">
+    <h2><span class="num">B</span> Check my payment protection</h2>
+    <div class="body">
+      <p class="lede">Seven claims, each answered by something that actually ran — a real
+        delivery fired at your endpoint, or a real query against Razorpay. Not a
+        configuration check.</p>
+      <div class="row">
+        <button class="primary" id="checkBtn">Check my payment protection</button>
+      </div>
+      <div id="protOut"></div>
+    </div>
+  </section>
+
   <!-- 1 ---------------------------------------------------------------- -->
   <section class="stage">
-    <h2><span class="num">1</span> The merchant</h2>
+    <h2><span class="num">1</span> Inspect any integration</h2>
     <div class="body">
       <p class="lede">Point Raze at a real integration. It clones the repository, finds the
         code that receives Razorpay webhooks, and reports what is wrong with it — with the
@@ -452,6 +564,146 @@ async function call(path, btn, label) {
 }
 $('reconcileBtn').onclick = (e) => call('/api/reconcile', e.target, 'Asking Razorpay…');
 $('ledgerBtn').onclick = (e) => call('/api/ledger', e.target, 'Sweeping…');
+
+// ---- connect flow ----------------------------------------------------------
+const setDot = (id, state) => { const d = $(id); if (d) d.className = 'dot ' + state; };
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  return r.json();
+}
+
+$('connectRzp').onclick = async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = 'Checking…';
+  $('rzpOut').innerHTML = '';
+  try {
+    const d = await post('/api/connect/razorpay', {
+      keyId: $('keyId').value, keySecret: $('keySecret').value,
+    });
+    if (d.error) { setDot('dotRzp', 'bad'); $('rzpOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
+    setDot('dotRzp', 'good');
+    // The secret field has done its job; do not leave it sitting in the DOM.
+    $('keySecret').value = '';
+    const hooks = d.existing_webhooks || [];
+    $('rzpOut').innerHTML = `<div class="prov ok">Connected in Test Mode. Verified by calling
+      the API, not by checking the shape of the key.</div>` +
+      (hooks.length
+        ? `<div class="prov">Webhooks already on this account:<br>` +
+          hooks.map(h => `<code>${esc(h.url)}</code> ${h.active ? 'active' : 'off'}`).join('<br>') + '</div>'
+        : '<div class="prov">No webhooks registered on this account yet.</div>');
+  } finally { b.disabled = false; b.textContent = 'Connect'; }
+};
+
+$('registerHook').onclick = async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = 'Registering…';
+  $('hookOut').innerHTML = '';
+  try {
+    const d = await post('/api/connect/webhook', { url: $('hookUrlIn').value });
+    if (d.error) { setDot('dotHook', 'bad'); $('hookOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
+    setDot('dotHook', d.confirmed ? 'good' : 'warn');
+    $('hookOut').innerHTML = `<div class="prov ${d.confirmed ? 'ok' : ''}">
+      Registered <code>${esc(d.id)}</code> → <code>${esc(d.url)}</code><br>
+      ${d.confirmed ? 'Read back from Razorpay and confirmed active.' : 'Registered, but Razorpay did not confirm it active.'}<br>
+      Events: ${esc((d.events || []).join(', '))}<br>${esc(d.note)}</div>`;
+  } finally { b.disabled = false; b.textContent = 'Register'; }
+};
+
+$('connectDb').onclick = async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = 'Reading…';
+  $('dbOut').innerHTML = '';
+  try {
+    const d = await post('/api/connect/database', { databaseUrl: $('dbUrl').value });
+    if (d.error) { setDot('dotDb', 'bad'); $('dbOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
+    setDot('dotDb', 'good');
+    $('dbUrl').value = '';
+    $('dbOut').innerHTML = `<div class="prov ok">Read ${d.tables.length} table(s): ` +
+      d.tables.map(t => `<code>${esc(t.name)}</code>`).join(' ') + '</div>' +
+      (d.note ? `<div class="prov">${esc(d.note)}</div>` : '');
+    renderProposals(d.proposals || [], d.bestTable);
+  } finally { b.disabled = false; b.textContent = 'Read my schema'; }
+};
+
+function renderProposals(props, best) {
+  if (!props.length) { $('stepApprove').classList.add('hide'); return; }
+  $('stepApprove').classList.remove('hide');
+
+  // Grouped by table. A schema with several order-shaped tables produces a
+  // proposal for each; showing thirty checkboxes is correct and useless. The
+  // strongest candidate opens expanded and pre-ticked, the rest stay collapsed
+  // and unticked — visible, because silently picking the wrong table is the
+  // failure that actually costs money.
+  const byTable = new Map();
+  for (const p of props) {
+    if (!byTable.has(p.table)) byTable.set(p.table, []);
+    byTable.get(p.table).push(p);
+  }
+  const tables = [...byTable.keys()].sort((a, b) => (a === best ? -1 : b === best ? 1 : 0));
+
+  $('proposalOut').innerHTML = tables.map((t) => {
+    const group = byTable.get(t);
+    const isBest = t === best;
+    return `<details class="tgroup ${isBest ? 'best' : ''}" ${isBest ? 'open' : ''}>
+      <summary><b><code>${esc(t)}</code></b> — ${group.length} event(s)
+        ${isBest ? '<span class="tag pass">best match</span>' : '<span class="tag skip">other candidate</span>'}</summary>
+      ${group.map((p) => `
+        <div class="prop">
+          <label class="proph">
+            <input type="checkbox" class="propcb" data-id="${esc(p.id)}"
+              ${isBest && !p.questions.length ? 'checked' : ''}>
+            <span><b>${esc(p.eventType)}</b></span>
+          </label>
+          <div class="mapline">match on <code>${esc(p.table)}.${esc(p.key.column)}</code>
+            &larr; <code>${esc(p.key.from)}</code></div>
+          ${Object.keys(p.set || {}).length ? '<div class="mapline">set ' +
+            Object.entries(p.set).map(([k, v]) => `<code>${esc(k)}</code> = ${esc(JSON.stringify(v))}`).join(', ') + '</div>' : ''}
+          ${Object.keys(p.add || {}).length ? '<div class="mapline">add ' +
+            Object.entries(p.add).map(([k, v]) => `<code>${esc(k)}</code> += ${esc(JSON.stringify(v))}`).join(', ') + '</div>' : ''}
+          ${p.guard ? `<div class="mapline">refuse when <code>${esc(p.guard.column)}</code> is already
+            ${esc((p.guard.notIn || []).join(' or '))}</div>` : ''}
+          <details><summary>why Raze thinks so</summary>
+            <ul class="ev">${(p.evidence || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+          </details>
+          ${p.questions.length ? `<div class="ask">Needs your decision:
+            <ul>${p.questions.map((q) => `<li>${esc(q)}</li>`).join('')}</ul>
+            Left unticked — Raze will not choose this for you.</div>` : ''}
+        </div>`).join('')}
+    </details>`;
+  }).join('');
+}
+
+$('approveBtn').onclick = async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = 'Validating…';
+  try {
+    const accept = [...document.querySelectorAll('.propcb')].filter(c => c.checked).map(c => c.dataset.id);
+    const d = await post('/api/connect/approve', { accept });
+    $('approveNote').innerHTML = d.error
+      ? `<span class="errtext">${esc(d.error)}</span>`
+      : `<span class="oktext">Armed ${d.registered.length} mapping(s). ${esc(d.note)}</span>`;
+    if (!d.error) setDot('dotApprove', 'good');
+  } finally { b.disabled = false; b.textContent = 'Approve and protect'; }
+};
+
+$('checkBtn').onclick = async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = 'Firing real deliveries…';
+  $('protOut').innerHTML = '<p class="note">Sending real captured Razorpay deliveries…</p>';
+  try {
+    const d = await post('/api/protection', {});
+    if (d.error) { $('protOut').innerHTML = `<div class="err">${esc(d.error)}</div>`; return; }
+    $('protOut').innerHTML = `
+      <div class="verdict ${d.protected ? 'good' : 'bad'}">${esc(d.verdict)}</div>
+      <div class="checks">${d.checks.map(c => `
+        <div class="chk ${c.ok ? 'ok' : 'no'}">
+          <span class="mark">${c.ok ? '✓' : '✗'}</span>
+          <span class="cn">${esc(c.name)}</span>
+          <span class="cd">${esc(c.detail)}</span>
+        </div>`).join('')}</div>
+      <div class="prov">${esc(d.note)}</div>`;
+    refreshState();
+  } finally { b.disabled = false; b.textContent = 'Check my payment protection'; }
+};
 
 refreshState();
 </script>

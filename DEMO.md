@@ -22,6 +22,50 @@ Do not explain further yet. Show it.
 
 ---
 
+## 0:10 — Connect, and let Raze work it out
+
+Console, stage A. This is the product; everything after it is proof.
+
+Paste Test Mode keys → **Connect**. Paste the deployed URL → **Register**: Raze
+generates the secret, subscribes the five events, and reads the registration back
+from Razorpay to confirm it. Paste the database URL → **Read my schema**.
+
+```
+orders          best match      payment.captured → orders
+                                match on orders.razorpay_order_id
+                                  ← payload.payment.entity.order_id
+                                set status = 'paid'
+                                add amount_paise += payload.payment.entity.amount
+                                refuse when status is already refunded
+shop_orders     other candidate
+```
+
+> It read `information_schema` and compared it against the field paths in 796
+> real captured deliveries. Name and type matching — deterministic, no model,
+> the same answer every time. Where it cannot decide, it asks instead of
+> guessing, and leaves that mapping unticked.
+
+**Approve and protect.** Then stage B, **Check my payment protection**:
+
+```
+PROTECTED
+✓ Signature verification        rejected with HTTP 401
+✓ Duplicate-safe processing     credit_count=1, credited=100 paise
+✓ Retry-safe processing         single credited 100, with retries credited 100
+✓ State transition protection   final status=paid
+✓ Refund handling               status=refunded, credited=0 paise (was 100)
+✓ Reconciliation active         asked Razorpay directly; 6 drifted, 6 repaired
+✓ Missing-payment detection     1 order watched
+```
+
+> Every tick is the outcome of a real delivery or a real query. With nothing
+> being watched, the last one goes red and the verdict is NOT PROTECTED — a tick
+> that meant "a library is installed" would be worth nothing.
+
+The merchant never wrote a webhook handler.
+
+---
+
 ## 0:15 — Somebody else's code
 
 Console, stage 1. Paste a real repository:

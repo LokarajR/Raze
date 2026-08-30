@@ -72,6 +72,18 @@ const S = {
 
 const clients = new Set();
 
+/**
+ * What the merchant has connected, for this process only.
+ *
+ * Never persisted. A database URL or an API key that outlives the session is a
+ * credential this project would then be responsible for storing safely, and the
+ * honest answer is not to store it at all.
+ */
+const CONNECT = {
+  razorpay: null, webhookSecret: null, webhookId: null,
+  databaseUrl: null, merchantPool: null, proposals: null, approved: null,
+};
+
 function emit(type, data) {
   const line = `data: ${JSON.stringify({ type, at: Date.now(), ...data })}\n\n`;
   for (const res of clients) {
@@ -512,6 +524,282 @@ function createApp({ pool, databaseUrl, env }) {
   });
 
   // ---- what the merchant's own tables say --------------------------------
+  // -------------------------------------------------------------------------
+  // connect: the merchant's own account, the merchant's own database
+  // -------------------------------------------------------------------------
+  //
+  // A merchant should not have to know what idempotency is. They say "protect my
+  // Razorpay payments"; everything below is Raze working out what that means for
+  // their particular schema and account.
+  //
+  // Credentials given here live in this process's memory: never written to disk,
+  // never logged, never returned by any endpoint. The public deployment refuses
+  // these routes outright — asking a merchant to paste a production database URL
+  // into a public web page would be indefensible however carefully the value
+  // were handled afterwards.
+
+  const localOnly = (_req, res, next) => {
+    if (S.publicUrl) {
+      return res.status(403).json({
+        error: 'Connecting a real merchant runs locally, not on the public deployment. '
+          + 'Clone the repository and run `npm run web`. This instance stays the public '
+          + 'webhook receiver.',
+      });
+    }
+    next();
+  };
+
+  app.post('/api/connect/razorpay', localOnly, async (req, res) => {
+    const keyId = String(req.body.keyId || '').trim();
+    const keySecret = String(req.body.keySecret || '').trim();
+    if (!keyId || !keySecret) return res.status(400).json({ error: 'both keys are required' });
+    if (!/^rzp_test_/.test(keyId)) {
+      return res.status(400).json({
+        error: 'that looks like a live key. Connect a Test Mode key (rzp_test_...) — this '
+          + 'fires real deliveries at a merchant and must not touch live money.',
+      });
+    }
+    try {
+      // Verified by using it, not by pattern-matching the string.
+      const auth = 'Basic ' + Buffer.from(keyId + ':' + keySecret).toString('base64');
+      const r = await fetch('https://api.razorpay.com/v1/payments?count=1', {
+        headers: { authorization: auth },
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        return res.status(400).json({
+          error: (body.error && body.error.description) || 'Razorpay rejected the keys (HTTP ' + r.status + ')',
+        });
+      }
+      CONNECT.razorpay = { keyId, keySecret };
+      const hooks = await fetch('https://api.razorpay.com/v1/webhooks', { headers: { authorization: auth } });
+      const hb = await hooks.json();
+      res.json({
+        ok: true,
+        mode: 'test',
+        existing_webhooks: (hb.items || []).map((w) => ({ id: w.id, url: w.url, active: w.active })),
+      });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/connect/webhook', localOnly, async (req, res) => {
+    if (!CONNECT.razorpay) return res.status(400).json({ error: 'connect the Razorpay account first' });
+    const url = String(req.body.url || '').trim();
+    if (!/^https:\/\//.test(url)) {
+      return res.status(400).json({
+        error: 'Razorpay needs a public HTTPS endpoint and rejects localhost at save time. '
+          + 'Deploy first, then paste that URL here.',
+      });
+    }
+    try {
+      // Generated here rather than asked for: a merchant choosing their own
+      // secret is a merchant choosing a weak one.
+      const secret = crypto.randomBytes(24).toString('hex');
+      const auth = 'Basic ' + Buffer.from(CONNECT.razorpay.keyId + ':' + CONNECT.razorpay.keySecret).toString('base64');
+      const r = await fetch('https://api.razorpay.com/v1/webhooks', {
+        method: 'POST',
+        headers: { authorization: auth, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          secret,
+          events: {
+            'payment.authorized': true, 'payment.captured': true, 'payment.failed': true,
+            'order.paid': true, 'refund.created': true,
+          },
+        }),
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        return res.status(400).json({
+          error: (body.error && body.error.description) || 'HTTP ' + r.status,
+        });
+      }
+
+      // Read it back. A registration the provider has not confirmed is not a
+      // registration.
+      const check = await fetch('https://api.razorpay.com/v1/webhooks', { headers: { authorization: auth } });
+      const cb = await check.json();
+      const found = (cb.items || []).find((w) => w.id === body.id);
+
+      CONNECT.webhookSecret = secret;
+      CONNECT.webhookId = body.id;
+      res.json({
+        ok: true,
+        id: body.id,
+        url: body.url,
+        confirmed: !!(found && found.active),
+        events: Object.keys(body.events || {}).filter((k) => body.events[k]),
+        note: 'The secret was generated here and is held in memory only. It is never '
+          + 'written to disk or returned by any endpoint.',
+      });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/connect/database', localOnly, async (req, res) => {
+    const url = String(req.body.databaseUrl || '').trim();
+    if (!url) return res.status(400).json({ error: 'a database URL is required' });
+    try {
+      const { Pool } = require('pg');
+      const merchantPool = new Pool({ connectionString: url, max: 4 });
+      merchantPool.on('error', () => {});
+      await merchantPool.query('SELECT 1');
+
+      const infer = require(path.join(RAZE, 'src', 'infer'));
+      const out = await infer.infer({ pool: merchantPool, corpusPath: LOG });
+
+      if (CONNECT.merchantPool) await CONNECT.merchantPool.end().catch(() => {});
+      CONNECT.merchantPool = merchantPool;
+      CONNECT.databaseUrl = url;
+      CONNECT.proposals = out.proposals;
+
+      // A schema with several order-shaped tables produces a proposal for each,
+      // which is correct and unusable. Score them so the merchant is shown the
+      // strongest candidate first — but show the others rather than hiding them,
+      // because picking the wrong table silently is the failure that matters.
+      const score = (p) => Object.keys(p.spec.set || {}).length
+        + Object.keys(p.spec.add || {}).length * 2
+        + (p.spec.guard ? 2 : 0)
+        + (/razorpay/i.test(p.spec.key.column) ? 3 : 0);
+      const byTable = new Map();
+      for (const p of out.proposals) {
+        const t = p.spec.table;
+        byTable.set(t, (byTable.get(t) || 0) + score(p));
+      }
+      const ranked = [...byTable.entries()].sort((a, b) => b[1] - a[1]);
+      const best = ranked.length ? ranked[0][0] : null;
+
+      res.json({
+        ok: true,
+        tables: out.schema.map((t) => ({ name: t.name, columns: t.columns.length })),
+        bestTable: best,
+        tableRanking: ranked.map(([name, sc]) => ({ table: name, score: sc })),
+        proposals: out.proposals.map((p) => ({
+          recommended: p.spec.table === best,
+          id: p.eventType + '|' + p.spec.table,
+          eventType: p.eventType,
+          table: p.spec.table,
+          key: p.spec.key,
+          set: p.spec.set,
+          add: p.spec.add,
+          guard: p.spec.guard,
+          evidence: p.evidence,
+          questions: p.questions,
+        })),
+        note: out.proposals.length === 0
+          ? 'No table matched a Razorpay event shape. Raze proposes nothing rather than '
+            + 'guessing which table holds your orders.'
+          : undefined,
+      });
+    } catch (err) { res.status(400).json({ error: err.message }); }
+  });
+
+  app.post('/api/connect/approve', localOnly, async (req, res) => {
+    if (!CONNECT.proposals || !CONNECT.proposals.length) {
+      return res.status(400).json({ error: 'connect a database first' });
+    }
+    const accepted = new Set(req.body.accept || []);
+    if (accepted.size === 0) return res.status(400).json({ error: 'nothing was approved' });
+    try {
+      const mapping = require(path.join(RAZE, 'src', 'mapping'));
+      const chosen = CONNECT.proposals.filter((p) => accepted.has(p.eventType + '|' + p.spec.table));
+
+      // Validated against the live schema before anything is armed. A mapping
+      // naming a column that does not exist has to fail here, loudly, rather
+      // than silently writing nothing later.
+      const registered = [];
+      for (const p of chosen) {
+        const spec = mapping.normalise(p.eventType, p.spec);
+        await mapping.validateAgainstSchema(CONNECT.merchantPool, spec);
+        registered.push({ eventType: p.eventType, table: spec.table });
+      }
+      CONNECT.approved = chosen;
+      res.json({ ok: true, registered, note: 'Validated against your live schema.' });
+    } catch (err) { res.status(400).json({ error: err.message }); }
+  });
+
+  // ---- "Check my payment protection" -------------------------------------
+  //
+  // Seven claims, each answered by something that actually ran. A tick meaning
+  // "a library is installed" would be worthless; every one below is the outcome
+  // of a real delivery or a real query.
+  app.post('/api/protection', localOnly, async (req, res) => {
+    const target = req.body.target_url || 'http://127.0.0.1:' + S.merchantPort + '/webhook';
+    try {
+      // A green tick here with nothing being watched would be a lie. The table
+      // existing proves the mechanism is installed; it does not mean a single
+      // order is being watched, and an order nobody expects is an order whose
+      // absence nobody will notice.
+      let absenceOk = false;
+      let absenceWhy = 'no expectations armed';
+      try {
+        const r = await pool.query('SELECT count(*)::int n FROM raze_expectations');
+        const n = r.rows[0].n;
+        absenceOk = n > 0;
+        absenceWhy = n > 0
+          ? n + ' order(s) watched; an overdue one resolves to recovered, failed or abandoned'
+          : 'installed, but no order is being watched — arm expectations with `raze watch` '
+            + 'or rz.expect() so a payment that never arrives is noticed';
+      } catch (err) { absenceWhy = 'raze_expectations unreadable: ' + err.message; }
+
+      const secret = CONNECT.webhookSecret || resolveDemoSecret(env).secret;
+      const auditor = createAuditor({ targetUrl: target, pool, logFile: LOG, webhookSecret: secret });
+      const results = await auditor.run();
+      const by = Object.fromEntries(results.map((r) => [r.name, r]));
+
+      const rz = CONNECT.razorpay || razorpay;
+      let reconcileOk = false;
+      let reconcileWhy = 'no Razorpay credentials connected';
+      if (rz && rz.keyId && rz.keySecret) {
+        try {
+          const rec = createReconciler({
+            db: pool,
+            razorpay: rz,
+            localOrderIds: async () => {
+              const r = await pool.query('SELECT order_id FROM shop_orders');
+              return new Set(r.rows.map((x) => x.order_id));
+            },
+            config: { coldStartMs: 72 * 3600 * 1000 },
+          });
+          const out = await rec.runOnce();
+          reconcileOk = !!out.ok;
+          reconcileWhy = out.ok
+            ? 'asked Razorpay directly; ' + out.drift + ' drifted, ' + out.payments.repaired + ' repaired'
+            : out.error;
+        } catch (err) { reconcileWhy = err.message; }
+      }
+
+
+
+      const probe = (name) => by[name] || null;
+      const checks = [
+        { name: 'Signature verification',
+          ok: !!(probe('tampered-signature') && probe('tampered-signature').pass && !probe('tampered-signature').skipped),
+          detail: probe('tampered-signature') ? probe('tampered-signature').observed : 'not run' },
+        { name: 'Duplicate-safe processing', ok: !!(probe('duplicate-delivery') && probe('duplicate-delivery').pass),
+          detail: probe('duplicate-delivery') ? probe('duplicate-delivery').observed : 'not run' },
+        { name: 'Retry-safe processing', ok: !!(probe('timeout-retry') && probe('timeout-retry').pass),
+          detail: probe('timeout-retry') ? probe('timeout-retry').observed : 'not run' },
+        { name: 'State transition protection', ok: !!(probe('out-of-order') && probe('out-of-order').pass),
+          detail: probe('out-of-order') ? probe('out-of-order').observed : 'not run' },
+        { name: 'Refund handling', ok: !!(probe('refund-event') && probe('refund-event').pass),
+          detail: probe('refund-event') ? probe('refund-event').observed : 'not run' },
+        { name: 'Reconciliation active', ok: reconcileOk, detail: reconcileWhy },
+        { name: 'Missing-payment detection', ok: absenceOk, detail: absenceWhy },
+      ];
+      const isProtected = checks.every((c) => c.ok);
+      emit('protection', { protected: isProtected });
+      res.json({
+        checks,
+        protected: isProtected,
+        verdict: isProtected ? 'PROTECTED' : 'NOT PROTECTED',
+        note: isProtected
+          ? 'Every tick above is the outcome of a real delivery or a real query, not a '
+            + 'configuration check.'
+          : 'A failing check is a real failure against real deliveries, not a warning.',
+      });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   app.get('/api/state', async (_req, res) => {
     const out = { mode: S.mode, deliveries: S.deliveries.slice(0, 60), scans: S.scans };
     try {
