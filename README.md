@@ -492,10 +492,18 @@ Everything below needs **Node 22+ and git**. Nothing else — no Postgres, no
 Docker, no API key, no model.
 
 ```bash
+cd ~                       # or anywhere you own — see the warning below
 git clone https://github.com/LokarajR/Raze.git
 cd Raze
 npm install
 ```
+
+> **Do not clone into a system directory.** PowerShell opened as Administrator
+> starts in `C:\Windows\System32`, and cloning there gives a tree nothing can
+> write to — the embedded PostgreSQL fails with
+> `could not create directory ... Permission denied`. Clone into your home
+> directory or Documents, and there is no need to run as Administrator.
+
 
 `npm install` downloads a real PostgreSQL and a real MongoDB as npm packages, so
 there is no database to set up. They start on demand under `.pgdata/` and stop
@@ -563,6 +571,11 @@ Without a public URL nothing is lost — reconciliation still recovers every
 payment, it just arrives on the reconcile interval rather than in 0.23 seconds.
 
 ### If something goes wrong
+
+**`could not create directory ... Permission denied`** — the repository is
+somewhere your user cannot write, usually `C:\Windows\System32` from an elevated
+PowerShell. Move it: `cd ~; git clone ...` and run again. Administrator is never
+needed.
 
 **`pre-existing shared memory block is still in use`** — a previous run left
 Postgres up. `taskkill /F /IM postgres.exe` on Windows, `pkill postgres`

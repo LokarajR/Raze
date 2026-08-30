@@ -28,6 +28,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { scan } = require('../src/patterns');
 
 const RAZE = path.join(__dirname, '..');
@@ -66,10 +67,55 @@ function findHandlers(root) {
   return out;
 }
 
+/**
+ * The integrations this evaluation reads.
+ *
+ * Fetched at run time and never vendored: they carry no licence, so their code is
+ * downloaded like a fixture and none of it is committed here.
+ */
+const REPOS = [
+  'neharahman/razorpay-webhook',
+  'pavankumaroff/razorpay-webhook',
+  'smartcraze/Slotify',
+  'Rohit3523/medusa-razorpay-webhook',
+  'iamhvsharma/Razorpay-webhook',
+  'mehtaparam/firebase-razorpay-webhook',
+  'Venkatasaiyadav/razorpay-webhook',
+  'dineshchauhan7711/razorpay-payment-nodejs',
+  'sayantan56/kitty-webhook',
+  'srivardhanrr/RazorpayWebhookapp',
+];
+
+/**
+ * Clone anything missing.
+ *
+ * "Clone some integrations first" is not a useful error on a machine that has
+ * just cloned this repository. The evaluation knows which ones it wants, so it
+ * fetches them. One that cannot be reached is reported and skipped — someone
+ * else's repository going away is not a failure of this project.
+ */
+function ensureRepos() {
+  fs.mkdirSync(CACHE, { recursive: true });
+  const missing = REPOS.filter((r) => !fs.existsSync(path.join(CACHE, r.replace('/', '-'))));
+  if (missing.length === 0) return;
+  console.log(`  fetching ${missing.length} repositories (once; not committed here)`);
+  const failed = [];
+  for (const repo of missing) {
+    const dir = path.join(CACHE, repo.replace('/', '-'));
+    const res = spawnSync('git', ['clone', '-q', '--depth', '1',
+      'https://github.com/' + repo + '.git', dir], { encoding: 'utf8', timeout: 180000 });
+    if (res.status !== 0) failed.push(repo);
+  }
+  if (failed.length) console.log('  could not fetch: ' + failed.join(', ') + ' — skipped');
+  console.log('');
+}
+
 function main() {
-  if (!fs.existsSync(CACHE)) {
-    console.error(`\nNothing to evaluate: ${CACHE} does not exist.`);
-    console.error('Clone some integrations into it first.\n');
+  ensureRepos();
+
+  if (!fs.existsSync(CACHE) || fs.readdirSync(CACHE).length === 0) {
+    console.error('');
+    console.error('No integrations could be fetched. Check network access to github.com.');
     process.exit(1);
   }
 
