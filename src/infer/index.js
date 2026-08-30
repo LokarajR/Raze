@@ -144,7 +144,7 @@ const matches = (name, patterns) => patterns.some((p) => p.test(name));
  * that cannot be keyed is not a table this event belongs to, and inventing a key
  * for it would be the worst possible kind of guess.
  */
-function proposeFor(table, eventType, shape) {
+function proposeFor(table, eventType, shape, discovered) {
   const evidence = [];
 
   let key = null;
@@ -155,6 +155,12 @@ function proposeFor(table, eventType, shape) {
     key = { column: col.name, from: hint.path };
     evidence.push(`key: "${table.name}.${col.name}" (${col.type}) <- ${hint.path}, ${hint.why}`);
     break;
+  }
+  // Nothing in the names matched, but the data said what the name did not.
+  if (!key && discovered && shape.has(discovered.from)) {
+    key = { column: discovered.column, from: discovered.from };
+    evidence.push(`key: "${table.name}.${discovered.column}" <- ${discovered.from}, `
+      + `found by reading the column rather than its name (${discovered.why})`);
   }
   if (!key) return null;
 
@@ -220,6 +226,52 @@ function proposeFor(table, eventType, shape) {
 }
 
 /** Propose mappings for every table and event type that can be matched. */
+/**
+ * Find the key column by what it contains, when its name gives nothing away.
+ *
+ * Name matching handles the common case and fails completely on a schema whose
+ * author chose their own words — `gateway_ref` holds Razorpay order ids and
+ * matches no pattern anyone would think to write down. A column's contents are
+ * stronger evidence than its name, and reading them is what a person would do.
+ *
+ * Deliberately narrow. It samples a handful of values and accepts the column
+ * only if nearly all of them carry Razorpay's own identifier format, which is
+ * not a shape that appears by accident. A column that merely looks plausible is
+ * not enough: this returns nothing rather than a maybe, and setup then asks.
+ */
+async function findKeyByContent(pool, table) {
+  const textual = table.columns.filter((c) => TEXTUAL.has(c.type));
+  for (const col of textual) {
+    let rows;
+    try {
+      rows = await pool.query(
+        `SELECT "${col.name}" AS v FROM "${table.name}"
+          WHERE "${col.name}" IS NOT NULL LIMIT 25`);
+    } catch { continue; }
+    if (rows.rowCount < 2) continue;
+
+    const values = rows.rows.map((r) => String(r.v));
+    const orderLike = values.filter((v) => /^order_[A-Za-z0-9]{8,}$/.test(v)).length;
+    const payLike = values.filter((v) => /^pay_[A-Za-z0-9]{8,}$/.test(v)).length;
+
+    if (orderLike / values.length >= 0.8) {
+      return {
+        column: col.name,
+        from: 'payload.payment.entity.order_id',
+        why: `${orderLike} of ${values.length} sampled values are Razorpay order ids`,
+      };
+    }
+    if (payLike / values.length >= 0.8) {
+      return {
+        column: col.name,
+        from: 'payload.payment.entity.id',
+        why: `${payLike} of ${values.length} sampled values are Razorpay payment ids`,
+      };
+    }
+  }
+  return null;
+}
+
 async function infer({ pool, corpusPath, eventTypes }) {
   const shapes = eventShapes(corpusPath);
   const schema = await readSchema(pool);
@@ -227,10 +279,20 @@ async function infer({ pool, corpusPath, eventTypes }) {
 
   const proposals = [];
   for (const table of schema) {
+    // Names first — cheap, and right for most schemas. Only when they give
+    // nothing does this look at the data, and only at the column that would
+    // become the key.
+    let discovered = null;
+    const namedKey = types.some((type) => {
+      const shape = shapes.get(type);
+      return shape && proposeFor(table, type, shape);
+    });
+    if (!namedKey) discovered = await findKeyByContent(pool, table);
+
     for (const type of types) {
       const shape = shapes.get(type);
       if (!shape) continue;
-      const p = proposeFor(table, type, shape);
+      const p = proposeFor(table, type, shape, discovered);
       if (p) proposals.push(p);
     }
   }

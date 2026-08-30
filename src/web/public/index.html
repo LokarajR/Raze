@@ -187,6 +187,18 @@
             <div class="prov">If yes, Raze never repairs unattended — it always asks you
               first. Repairing something that fires a shipment could send it twice.</div>
           </div>
+          <div class="qa hide" id="qAmount">
+            <div class="q">Which column holds what the order <em>should</em> cost — as
+              distinct from what has been credited so far?</div>
+            <div class="row" id="amountChoices"></div>
+            <div class="row" style="margin-top:8px">
+              <button class="small" data-amount="__none__">There isn't one</button>
+            </div>
+            <div class="prov">Raze will not guess this. Two number columns look identical
+              from the outside, and writing to the one it checks against would destroy the
+              check. Without such a column Raze can still tell you when Razorpay and your
+              database disagree — it just will not repair anything on its own.</div>
+          </div>
           <div class="qa hide" id="qRefund">
             <div class="q">On a refund, should the amount come back out of the order, or
               should only the status change?</div>
@@ -361,7 +373,7 @@ $('bHook').onclick = async (e) => {
   } finally { e.target.disabled = false; }
 };
 
-const answers = {escalate_only: null, refund_policy: null};
+const answers = {escalate_only: null, refund_policy: null, expected_column: undefined};
 
 $('bDb').onclick = async (e) => {
   e.target.disabled = true; e.target.textContent = 'Reading…';
@@ -382,6 +394,14 @@ $('bDb').onclick = async (e) => {
       : '<p class="note">No table here looks like an orders table. Raze will not guess which one it is.</p>';
     $('qSide').classList.remove('hide');
     $('qRefund').classList.remove('hide');
+    if (d.bestTable) {
+      const cols = await post('/api/connect/columns', {table: d.bestTable});
+      if (!cols.error && cols.candidates.length) {
+        $('amountChoices').innerHTML = cols.candidates.map(c =>
+          '<button class="small" data-amount="' + esc(c) + '"><code>' + esc(c) + '</code></button>').join('');
+        $('qAmount').classList.remove('hide');
+      }
+    }
   } finally { e.target.disabled = false; e.target.textContent = 'Read my schema'; }
 };
 
@@ -398,8 +418,15 @@ document.addEventListener('click', (e) => {
     $('qRefund').querySelectorAll('button').forEach(b => b.classList.remove('primary'));
     ref.classList.add('primary');
   }
-  if (side || ref) {
-    $('bConfirm').disabled = !(answers.escalate_only !== null && answers.refund_policy);
+  const amt = e.target.closest('[data-amount]');
+  if (amt) {
+    answers.expected_column = amt.dataset.amount === '__none__' ? null : amt.dataset.amount;
+    $('qAmount').querySelectorAll('button').forEach(b => b.classList.remove('primary'));
+    amt.classList.add('primary');
+  }
+  if (side || ref || amt) {
+    $('bConfirm').disabled = !(answers.escalate_only !== null && answers.refund_policy
+      && answers.expected_column !== undefined);
   }
 });
 
@@ -410,7 +437,14 @@ $('bConfirm').onclick = async (e) => {
     const d = await post('/api/setup/backfill', {});
     if (d.error) { $('o5').innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
     dot('d4','good');
-    $('o5').innerHTML = '<div class="prov" style="color:var(--good)">Checked the last 24 hours: '
+    const noAmount = answers.expected_column === null
+      ? '<div class="prov" style="color:var(--risk)">You said there is no column recording '
+        + 'what an order should cost. Raze will tell you when Razorpay and your database '
+        + 'disagree, but it will not repair anything on its own — it cannot check that a '
+        + 'payment matches the order, and settling an unverified amount is not something '
+        + 'it will do quietly. Everything will wait for you.</div>'
+      : '';
+    $('o5').innerHTML = noAmount + '<div class="prov" style="color:var(--good)">Checked the last 24 hours: '
       + d.checked + ' payment(s) at Razorpay, ' + (d.checked - d.missing)
       + ' already in your system. '
       + (d.missing ? '<b>' + d.missing + ' missing, ' + rupees(d.paise) + '.</b> I will take it from here.'

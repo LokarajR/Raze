@@ -55,14 +55,18 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
         razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
         merchant: {
           mappingConfirmed: true,
-          escalateOnly: !!row.escalate_only,
+          // No expected-amount column means no amount can be verified, so this
+          // merchant is escalate-only whatever else they chose.
+          escalateOnly: !!row.escalate_only || !row.expected_column,
           autoRepair: true,
         },
         columns: {
           key: env.RAZE_ORDER_KEY_COLUMN || 'order_id',
           status: env.RAZE_STATUS_COLUMN || 'status',
           amount: env.RAZE_AMOUNT_COLUMN || 'credited_paise',
-          expected: env.RAZE_EXPECTED_COLUMN || null,
+          // The merchant's own answer, never inference. Falling back to the
+          // environment only when setup has not recorded one.
+          expected: row.expected_column || env.RAZE_EXPECTED_COLUMN || null,
         },
         ordersTable: env.RAZE_ORDERS_TABLE || 'shop_orders',
         logFile: require('fs').existsSync(path.join(RAZE, 'measurement', 'deliveries.jsonl'))

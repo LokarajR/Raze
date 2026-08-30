@@ -694,6 +694,96 @@ function createApp({ pool, databaseUrl, env }) {
     } catch (err) { res.status(400).json({ error: err.message }); }
   });
 
+
+  /**
+   * The integer-ish columns in the chosen table, for the merchant to pick from.
+   *
+   * Listing them rather than guessing: two BIGINT columns look identical to
+   * inference, and the difference between them is the difference between
+   * checking an amount and destroying the check.
+   */
+  app.post('/api/connect/columns', localOnly, async (req, res) => {
+    const table = String(req.body.table || '').trim();
+    if (!table) return res.status(400).json({ error: 'which table?' });
+    const target = CONNECT.merchantPool || pool;
+    try {
+      const r = await target.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+          WHERE table_name = $1 ORDER BY ordinal_position`, [table]);
+      const numeric = r.rows.filter((c) => /int|numeric|decimal|money|real|double/i.test(c.data_type));
+      res.json({
+        table,
+        columns: r.rows.map((c) => ({ name: c.column_name, type: c.data_type })),
+        candidates: numeric.map((c) => c.column_name),
+      });
+    } catch (err) { res.status(400).json({ error: err.message }); }
+  });
+
+
+  /**
+   * The mapping a merchant states, when inference cannot work it out.
+   *
+   * On a schema whose names are the author's own — `gateway_ref`, `fulfilment`,
+   * `ticket_value` — inference can find the key by reading the data but cannot
+   * tell which column is a status and which holds money. It declines, correctly.
+   * Declining is not the same as being unable to help: the merchant knows their
+   * own columns, so they are asked, and every name they give is validated
+   * against the live schema before anything is armed.
+   */
+  app.post('/api/connect/manual-mapping', localOnly, async (req, res) => {
+    const { table, key, status, credited, expected } = req.body || {};
+    if (!table || !key || !status || !credited) {
+      return res.status(400).json({
+        error: 'a table, a key column, a status column and a credited-amount column are all '
+          + 'needed before anything can be armed',
+      });
+    }
+    if (expected && expected === credited) {
+      return res.status(400).json({
+        error: 'the expected amount and the credited amount cannot be the same column — '
+          + 'writing to the figure the payment is checked against destroys the check',
+      });
+    }
+    const target = CONNECT.merchantPool || pool;
+    try {
+      const cols = await target.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = $1`, [table]);
+      const present = new Set(cols.rows.map((r) => r.column_name));
+      const missing = [key, status, credited, expected].filter((c) => c && !present.has(c));
+      if (missing.length) {
+        return res.status(400).json({ error: `no such column in "${table}": ${missing.join(', ')}` });
+      }
+
+      const mapping = require(path.join(RAZE, 'src', 'mapping'));
+      const spec = mapping.normalise('payment.captured', {
+        table,
+        key: { column: key, from: 'payload.payment.entity.order_id' },
+        set: { [status]: { literal: 'paid' } },
+        add: { [credited]: 'payload.payment.entity.amount' },
+        guard: { column: status, notIn: ['refunded'] },
+        insertIfMissing: false,
+      });
+      await mapping.validateAgainstSchema(target, spec);
+
+      CONNECT.manual = { table, key, status, credited, expected: expected || null };
+      await saveSetup({
+        mapping_confirmed: true,
+        expected_column: expected || null,
+        expected_column_absent: !expected,
+        escalate_only: !expected,
+      });
+      res.json({
+        ok: true,
+        armed: spec,
+        auto_repair: !!expected,
+        note: expected
+          ? 'Validated against your live schema.'
+          : 'Validated. Without a column recording what an order should cost, Raze will '
+            + 'report divergence but will not repair anything on its own.',
+      });
+    } catch (err) { res.status(400).json({ error: err.message }); }
+  });
+
   app.post('/api/connect/approve', localOnly, async (req, res) => {
     if (!CONNECT.proposals || !CONNECT.proposals.length) {
       return res.status(400).json({ error: 'connect a database first' });
@@ -876,11 +966,23 @@ function createApp({ pool, databaseUrl, env }) {
         mapping_confirmed BOOLEAN NOT NULL DEFAULT false,
         escalate_only BOOLEAN,
         refund_policy TEXT,
+        expected_column TEXT,
+        expected_column_absent BOOLEAN,
         backfill_at TIMESTAMPTZ,
         backfill_checked INT,
         backfill_missing INT,
         backfill_paise BIGINT,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
+      // CREATE TABLE IF NOT EXISTS does nothing to a table that already exists,
+      // so a column added after someone has run setup once is simply absent.
+      // Adding them explicitly is the difference between a new field working and
+      // a merchant meeting "column does not exist" on their own console.
+      for (const [col, type] of [
+        ['expected_column', 'TEXT'],
+        ['expected_column_absent', 'BOOLEAN'],
+      ]) {
+        await pool.query(`ALTER TABLE raze_setup ADD COLUMN IF NOT EXISTS "${col}" ${type}`);
+      }
       const r = await pool.query('SELECT * FROM raze_setup WHERE id = 1');
       const row = r.rows[0] || {};
       return {
@@ -911,6 +1013,19 @@ function createApp({ pool, databaseUrl, env }) {
       const patch = {};
       if (req.body.escalate_only !== undefined) patch.escalate_only = !!req.body.escalate_only;
       if (req.body.refund_policy) patch.refund_policy = String(req.body.refund_policy);
+      // Asked, never inferred. Inference cannot tell "what this order should
+      // cost" from "what we have credited", and picking wrong means writing to
+      // the figure the amount is verified against — which corrupted a real
+      // order during testing and would have made the next check pass for the
+      // wrong reason.
+      if (req.body.expected_column !== undefined) {
+        const c = req.body.expected_column ? String(req.body.expected_column) : null;
+        patch.expected_column = c;
+        patch.expected_column_absent = !c;
+        // No such column means divergence can still be found — it just cannot be
+        // repaired unattended, so this merchant becomes escalate-only.
+        if (!c) patch.escalate_only = true;
+      }
       if (req.body.mapping_confirmed !== undefined) {
         patch.mapping_confirmed = !!req.body.mapping_confirmed;
       }

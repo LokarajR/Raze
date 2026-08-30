@@ -32,7 +32,10 @@ module.exports = async function cmdRun({ env, flag, RAZE, deps }) {
 
   const merchant = {
     mappingConfirmed: env.RAZE_MAPPING_CONFIRMED !== 'false',
-    escalateOnly: env.RAZE_ESCALATE_ONLY === 'true' || flag('escalate-only', false) === true,
+    // Enforced, not advised: without a column to check the amount against there
+    // is nothing to verify, so nothing may be applied unattended.
+    escalateOnly: env.RAZE_ESCALATE_ONLY === 'true' || flag('escalate-only', false) === true
+      || !flag('expected-column', env.RAZE_EXPECTED_COLUMN || null),
     autoRepair: env.RAZE_AUTO_REPAIR !== 'false' && flag('no-auto', false) !== true,
   };
 
@@ -51,8 +54,20 @@ module.exports = async function cmdRun({ env, flag, RAZE, deps }) {
     path.join(RAZE, '..', 'deliveries.jsonl'),
   ].find((p) => fs.existsSync(p));
 
+  // Stated on the command line, the same way the console states it. Without
+  // this the daemon re-infers and declines on any schema inference cannot read.
+  const mappingSpec = columns.expected || flag('status-column', null) ? {
+    table,
+    key: { column: columns.key, from: 'payload.payment.entity.order_id' },
+    set: { [columns.status]: { literal: 'paid' } },
+    add: { [columns.amount]: 'payload.payment.entity.amount' },
+    guard: { column: columns.status, notIn: ['refunded'] },
+    insertIfMissing: false,
+  } : null;
+
   const loops = createLoops({
     pool,
+    mappingSpec,
     razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
     merchant, columns, ordersTable: table, logFile: LOG,
     onEvent: (e) => {
@@ -80,9 +95,10 @@ module.exports = async function cmdRun({ env, flag, RAZE, deps }) {
     ? 'on, under policy' : 'off — everything waits for you'}`);
   if (!columns.expected) {
     console.log('');
-    console.log('  Note: no expected-amount column is configured, so every repair will');
-    console.log('  escalate rather than apply. Pass --expected-column=<name> to enable');
-    console.log('  unattended repair.');
+    console.log('  No expected-amount column is configured, so Raze cannot check that a');
+    console.log('  payment matches the order it is for. It will still tell you when');
+    console.log('  Razorpay and your database disagree; it will not repair anything on');
+    console.log('  its own. Pass --expected-column=<name> to enable unattended repair.');
   }
   console.log('');
   console.log('  ctrl-c to stop');

@@ -36,7 +36,7 @@ const DEFAULTS = {
 };
 
 function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, ordersTable,
-  logFile, onEvent = () => {} }) {
+  logFile, mappingSpec = null, onEvent = () => {} }) {
   const cfg = { ...DEFAULTS, ...config };
   const { createReconciler } = require(path.join(RAZE, 'src', 'reconcile'));
   const { createLedger } = require(path.join(RAZE, 'src', 'ledger'));
@@ -97,14 +97,28 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
       ['recon_' + payment.id, raw,
         crypto.createHash('sha256').update(raw).digest('hex'), orderId]);
 
-    const { proposals } = await infer.infer({ pool, corpusPath: logFile });
-    const found = proposals.find(
-      (p) => p.eventType === 'payment.captured' && p.spec.table === ordersTable);
-    if (!found) return { applied: false, reason: 'no mapping for ' + ordersTable };
+    // A mapping the merchant stated outranks anything inferred. On a schema whose
+    // column names are the author's own, inference finds the key by reading the
+    // data but cannot tell a status column from a money column — it declines,
+    // and the merchant's own answer is the only thing that can fill the gap.
+    let base = mappingSpec;
+    if (!base) {
+      const { proposals } = await infer.infer({ pool, corpusPath: logFile });
+      const found = proposals.find(
+        (p) => p.eventType === 'payment.captured' && p.spec.table === ordersTable);
+      if (!found) {
+        return {
+          applied: false,
+          reason: `nothing here can say how to write "${ordersTable}" from a captured `
+            + 'payment. Confirm the mapping and Raze will use it.',
+        };
+      }
+      base = found.spec;
+    }
 
     // Two corrections the merchant's configuration implies but inference cannot
     // know on its own.
-    const spec = JSON.parse(JSON.stringify(found.spec));
+    const spec = JSON.parse(JSON.stringify(base));
 
     // 1. Never write the column the amount is checked against.
     //
@@ -155,7 +169,7 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
       return { action: 'escalate', rule: verdict.rule };
     }
 
-    await applyThroughHandler(payment, orderId);
+    const attempt = await applyThroughHandler(payment, orderId);
 
     // Read the merchant's own table back. This is the only evidence.
     const after = await readOrder(orderId);
@@ -166,12 +180,20 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
       paymentId: payment.id,
       amountPaise: payment.amount,
       rule: landed ? verdict.rule : 'write-did-not-land',
+      // A failure that says nothing is worse than no message at all — it was
+      // being reported to the merchant as a blank line.
       why: landed ? verdict.why
-        : 'The repair was queued and processed, but your order still does not show the '
-          + 'payment. Something about the mapping does not fit this table.',
+        : (attempt && attempt.reason)
+          || 'The repair was queued and processed, but your order still does not show the '
+             + 'payment. Something about the mapping does not fit this table.',
       verifiedState: after.order,
     });
-    onEvent({ type: landed ? 'recovered' : 'escalated', orderId, amount: payment.amount });
+    onEvent({
+      type: landed ? 'recovered' : 'escalated',
+      orderId,
+      amount: payment.amount,
+      why: landed ? verdict.why : (attempt && attempt.reason) || 'the write did not land',
+    });
     return { action: landed ? 'recovered' : 'escalate', rule: verdict.rule };
   }
 
