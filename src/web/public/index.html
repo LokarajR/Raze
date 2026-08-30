@@ -44,6 +44,8 @@
     padding-left:10px;margin-top:9px;max-width:74ch}
   .err{color:var(--bad);font-family:var(--mono);font-size:12.5px;margin-top:8px}
   .oktext{color:var(--good)} .errtext{color:var(--bad)}
+  select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+    border-radius:7px;padding:8px 10px;font-family:var(--mono);font-size:12.5px}
   .hide{display:none !important}
 
   .row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
@@ -201,6 +203,26 @@
             <div class="prov">If yes, Raze never repairs unattended — it always asks you
               first. Repairing something that fires a shipment could send it twice.</div>
           </div>
+          <div class="qa hide" id="qManual">
+            <div class="q">Raze could not work out your payment model from this schema, so
+              it will not guess. Tell it, and it will check every name against your live
+              database before arming anything.</div>
+            <div class="row">
+              <select id="mTable"></select>
+              <select id="mKey"></select>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <select id="mStatus"></select>
+              <select id="mCredited"></select>
+            </div>
+            <div class="row" style="margin-top:8px">
+              <button class="primary small" id="bManual">Check these against my database</button>
+            </div>
+            <div class="prov">In order: the table your orders live in, the column holding the
+              Razorpay order id, the column saying whether it is paid, and the column money is
+              credited to.</div>
+            <div id="oManual"></div>
+          </div>
           <div class="qa hide" id="qAmount">
             <div class="q">Which column holds what the order <em>should</em> cost — as
               distinct from what has been credited so far?</div>
@@ -225,6 +247,7 @@
           </div>
           <div class="row" style="margin-top:12px">
             <button class="primary" id="bConfirm" disabled>Confirm and check the last 24 hours</button>
+            <span class="note" id="whyDisabled">Answer the questions above first.</span>
           </div>
           <div id="o5"></div>
         </div>
@@ -433,7 +456,73 @@ $('bSkipHook').onclick = () => {
   showStep(3);
 };
 
-const answers = {escalate_only: null, refund_policy: null, expected_column: undefined};
+const answers = {escalate_only: null, refund_policy: null, expected_column: undefined,
+  manual_needed: false, manual_ok: false};
+
+let chosenTable = null;
+
+async function offerAmountColumns(table) {
+  const cols = await post('/api/connect/columns', {table});
+  if (cols.error || !cols.candidates.length) return;
+  $('amountChoices').innerHTML = cols.candidates.map(c =>
+    '<button class="small" data-amount="' + esc(c) + '"><code>' + esc(c) + '</code></button>').join('');
+  $('qAmount').classList.remove('hide');
+}
+
+async function loadColumnsFor(table) {
+  if (!table) return;
+  const cols = await post('/api/connect/columns', {table});
+  if (cols.error) return;
+  const opts = (list) => list.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('');
+  const names = cols.columns.map(c => c.name);
+  $('mKey').innerHTML = '<option value="">order-id column…</option>' + opts(names);
+  $('mStatus').innerHTML = '<option value="">status column…</option>' + opts(names);
+  $('mCredited').innerHTML = '<option value="">credited-amount column…</option>' + opts(cols.candidates);
+}
+
+$('mTable').onchange = (e) => loadColumnsFor(e.target.value);
+
+$('bManual').onclick = async (e) => {
+  e.target.disabled = true;
+  try {
+    const body = {
+      table: $('mTable').value, key: $('mKey').value,
+      status: $('mStatus').value, credited: $('mCredited').value,
+      expected: answers.expected_column || null,
+    };
+    const d = await post('/api/connect/manual-mapping', body);
+    if (d.error) { $('oManual').innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+    chosenTable = body.table;
+    answers.manual_ok = true;
+    $('oManual').innerHTML = '<div class="prov" style="color:var(--good)">Checked against your '
+      + 'live database: ' + esc(body.table) + '.' + esc(body.key) + ' matches the Razorpay '
+      + 'order id, ' + esc(body.status) + ' carries the status, ' + esc(body.credited)
+      + ' takes the money.</div>';
+    confirmed('Mapping stated and validated',
+      body.table + ' · ' + body.key + ' · ' + body.status + ' · ' + body.credited);
+    await offerAmountColumns(body.table);
+    updateConfirmState();
+  } finally { e.target.disabled = false; }
+};
+
+/**
+ * Why the button is disabled, said out loud.
+ *
+ * A control that is simply grey teaches nothing. This names the answer that is
+ * still missing.
+ */
+function updateConfirmState() {
+  const missing = [];
+  if (answers.escalate_only === null) missing.push('whether marking an order paid triggers anything else');
+  if (!answers.refund_policy) missing.push('what a refund should do');
+  if (answers.manual_needed && !answers.manual_ok) missing.push('which columns hold your payment state');
+  if (answers.expected_column === undefined) missing.push('which column holds the expected amount');
+  $('bConfirm').disabled = missing.length > 0;
+  $('whyDisabled').textContent = missing.length
+    ? 'Still needed: ' + missing.join('; ') + '.'
+    : 'Ready.';
+}
+
 
 $('bDb').onclick = async (e) => {
   e.target.disabled = true; e.target.textContent = 'Reading…';
@@ -455,14 +544,21 @@ $('bDb').onclick = async (e) => {
       : '<p class="note">No table here looks like an orders table. Raze will not guess which one it is.</p>';
     $('qSide').classList.remove('hide');
     $('qRefund').classList.remove('hide');
+
     if (d.bestTable) {
-      const cols = await post('/api/connect/columns', {table: d.bestTable});
-      if (!cols.error && cols.candidates.length) {
-        $('amountChoices').innerHTML = cols.candidates.map(c =>
-          '<button class="small" data-amount="' + esc(c) + '"><code>' + esc(c) + '</code></button>').join('');
-        $('qAmount').classList.remove('hide');
-      }
+      chosenTable = d.bestTable;
+      await offerAmountColumns(d.bestTable);
+    } else {
+      // Inference declined, which is correct and used to be a dead end: the
+      // amount question was gated on a table it never produced, so the confirm
+      // button could never enable. The merchant states the mapping instead.
+      answers.manual_needed = true;
+      $('mTable').innerHTML = d.tables.map(t =>
+        '<option value="' + esc(t.name) + '">' + esc(t.name) + '</option>').join('');
+      await loadColumnsFor(d.tables[0] && d.tables[0].name);
+      $('qManual').classList.remove('hide');
     }
+    updateConfirmState();
   } finally { e.target.disabled = false; e.target.textContent = 'Read my schema'; }
 };
 
@@ -485,10 +581,7 @@ document.addEventListener('click', (e) => {
     $('qAmount').querySelectorAll('button').forEach(b => b.classList.remove('primary'));
     amt.classList.add('primary');
   }
-  if (side || ref || amt) {
-    $('bConfirm').disabled = !(answers.escalate_only !== null && answers.refund_policy
-      && answers.expected_column !== undefined);
-  }
+  if (side || ref || amt) updateConfirmState();
 });
 
 $('bConfirm').onclick = async (e) => {
