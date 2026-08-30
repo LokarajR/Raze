@@ -107,13 +107,35 @@ const SUBJECTS = [
       return {
         handler: (req, res) => controller.paymentSuccess(req, res),
         parseBody: true,
+        // What their handler was trying to do, expressed declaratively. Read
+        // straight off their own code: set amount, receipt, created_at and flag
+        // on the row keyed by order id, and only when flag is not already set.
+        // Nothing here is invented — it is their intent without their bug.
+        mapping: {
+          collection: 'payments',
+          key: { field: '_id', from: 'payload.payment.entity.order_id' },
+          set: {
+            amount: 'payload.payment.entity.amount',
+            receipt: 'payload.payment.entity.id',
+            created_at: 'created_at',
+            flag: { literal: true },
+          },
+          guard: { field: 'flag', notIn: [true] },
+          upsert: false,
+        },
         async seed() {
           await model.deleteMany({});
           await new model({ _id: orderId }).save();
         },
         async read() {
           const doc = await model.findById(orderId).lean();
-          return { recorded: !!(doc && doc.flag), detail: doc ? `flag=${!!doc.flag}` : 'no row' };
+          if (!doc) return { recorded: false, detail: 'no row' };
+          // Report the fields their own handler set out to write, not just the
+          // flag — "recorded" should mean the record is right, not merely present.
+          const parts = [`flag=${!!doc.flag}`];
+          if (doc.amount !== undefined) parts.push(`amount=${doc.amount}`);
+          if (doc.receipt) parts.push(`receipt=${doc.receipt}`);
+          return { recorded: !!doc.flag, detail: parts.join(' '), doc };
         },
       };
     },
@@ -253,10 +275,46 @@ async function runSubject(subject, pool) {
   console.log(`    still held for retry ${i.held}`);
   if (i.err) console.log(`    failure surfaced     "${String(i.err).slice(0, 60)}"`);
 
+  // ------------------------------------------------- raze owning execution
+  // The previous pass still called their handler, so a broken handler stayed
+  // broken. This one does not call it at all: the declared effect is applied by
+  // Raze inside its own transaction. Their code is not repaired, it is bypassed.
+  let owned = null;
+  if (ctx.mapping) {
+    await ctx.seed();
+    await pool.query('TRUNCATE raze_inbox, raze_subject_state');
+
+    const mongoMapping = require('../src/mongo/mapping');
+    const rz2 = raze.create({ db: pool, webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET });
+    const m = mongoMapping.attach(rz2, mongoose.connection.db);
+    await m.map(subject.eventType, ctx.mapping);
+
+    const app3 = express();
+    app3.use('/webhook', express.raw({ type: () => true }), rz2.middleware());
+    const s3 = await new Promise((r) => { const x = app3.listen(0, () => r(x)); });
+    const u3 = `http://127.0.0.1:${s3.address().port}/webhook`;
+
+    for (const a of attempts) await post(u3, a);
+    for (let k = 0; k < 8; k++) { await rz2.drain(); await sleep(150); }
+    owned = await ctx.read();
+    const inbox3 = await pool.query(
+      `SELECT count(*)::int total, count(*) FILTER (WHERE processed_at IS NULL)::int held FROM raze_inbox`
+    );
+    s3.close();
+
+    console.log('');
+    console.log('  RAZE OWNING EXECUTION  (their handler bypassed)');
+    console.log(`    ${attempts.length} deliveries deduplicated to ${inbox3.rows[0].total} event`);
+    console.log(`    their handler invoked 0 times`);
+    console.log(`    payment recorded     ${owned.recorded ? 'YES' : 'no'}   (${owned.detail})`);
+    console.log(`    still held           ${inbox3.rows[0].held}`);
+  }
+
   return {
     label: subject.label,
     bare: { deliveries: attempts.length, ok2xx, recorded: bare.recorded, detail: bare.detail },
     raze: { events: i.total, invoked, recorded: guarded2.recorded, held: i.held, error: i.err, detail: guarded2.detail },
+    owned: owned ? { recorded: owned.recorded, detail: owned.detail } : null,
   };
 }
 
@@ -289,6 +347,9 @@ async function main() {
     console.log(`    as published   ${r.bare.deliveries} deliveries, ${r.bare.ok2xx} answered 2xx, ${r.bare.detail}`);
     console.log(`    behind Raze    deduplicated to ${r.raze.events} event, ${r.raze.detail}` +
       `${r.raze.held ? `, ${r.raze.held} held for retry` : ''}`);
+    if (r.owned) {
+      console.log(`    Raze owning    ${r.owned.detail}  ${r.owned.recorded ? '<- payment correctly recorded' : ''}`);
+    }
   }
   console.log('');
   console.log('  Raze does not repair a broken handler. What changes is whether a');
