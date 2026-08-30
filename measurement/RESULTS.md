@@ -385,6 +385,30 @@ emailed `alerts@razorpay.com` notices for each:
 `mode-200` was not deactivated — it always responds 200, so its failure streak never
 started. That is a clean control for this behaviour as well.
 
+### It reproduced (2026-08-30)
+
+The four endpoints were re-enabled by hand on 2026-08-29. Two real Test Mode
+payments were then made on 2026-08-30, and Razorpay disabled the same four again:
+
+```
+OFF     mode-500     deliberately returns 500
+OFF     mode-slow    deliberately times out
+OFF     mode-drop    deliberately drops
+OFF     mode-400     deliberately returns 400
+ACTIVE  mode-200     answers correctly
+ACTIVE  raze-console answers correctly
+```
+
+Read from `GET /v1/webhooks` rather than from an email. The control held a second
+time: both endpoints that answer are still active, and only the ones that fail
+were disabled. So this is Razorpay's standing behaviour, not a one-off — an
+integration that fails deliveries loses the endpoint, and after that nothing
+arrives at all.
+
+That is the failure mode reconciliation exists for. Raze does not depend on
+delivery: with every endpoint disabled, asking Razorpay what it recorded still
+recovers the payments.
+
 **This does not explain the ladder termination.** The obvious objection is that Run 1's
 ladders stopped because the endpoints were disabled. They did not:
 
