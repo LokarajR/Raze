@@ -35,11 +35,13 @@ const FILES = [
   'layer10.test.js',
   'mcp.test.js',
   'states.test.js',
+  'control.test.js',
+  'deterministic.test.js',
 ];
 
 // Layers 2 and 3 talk to the live Razorpay API; layers 1 and 4 need only the
 // captured corpus.
-const OFFLINE_ONLY = new Set(['layer1.test.js', 'layer4.test.js', 'layer5.test.js', 'layer6.test.js', 'layer7.test.js', 'layer8.test.js', 'mcp.test.js', 'states.test.js']);
+const OFFLINE_ONLY = new Set(['layer1.test.js', 'layer4.test.js', 'layer5.test.js', 'layer6.test.js', 'layer7.test.js', 'layer8.test.js', 'mcp.test.js', 'states.test.js', 'control.test.js', 'deterministic.test.js']);
 
 async function main() {
   const offline = process.argv.includes('--offline');
