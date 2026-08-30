@@ -40,6 +40,11 @@ function alive(pid) {
 function listening(port) {
   return new Promise((resolve) => {
     const sock = net.connect({ host: '127.0.0.1', port });
+    // Never let a probe keep the process alive. Postgres does not complete the
+    // close on its side, so a probe socket sits in FIN_WAIT_2 and holds the
+    // event loop until the OS times it out — which made `raze demo` print its
+    // whole report and then hang instead of exiting.
+    sock.unref();
     const done = (v) => { sock.destroy(); resolve(v); };
     sock.setTimeout(700);
     sock.once('connect', () => done(true));

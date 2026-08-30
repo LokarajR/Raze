@@ -418,9 +418,26 @@ const commands = {
   help: cmdHelp,
 };
 
+/**
+ * Long-lived commands own the process; every other command is one-shot and must
+ * exit when its work is done.
+ *
+ * Finishing the work is not the same as having no handles left. Node's global
+ * fetch keeps HTTPS connections to the Razorpay API pooled and alive, so a
+ * command could print its entire report and then sit there until the OS timed
+ * the sockets out. Waiting for stdout to drain before exiting keeps piped
+ * output intact, which a bare process.exit() would truncate.
+ */
+const DAEMONS = new Set(['up', 'watch', 'protect']);
+
+function finish(code) {
+  if (DAEMONS.has(cmd)) { process.exitCode = code; return; }
+  process.stdout.write('', () => process.exit(code));
+}
+
 (async () => {
   const fn = commands[cmd];
   if (!fn) { cmdHelp(); process.exit(cmd ? 2 : 0); }
-  try { await fn(); }
-  catch (err) { console.error(`\n${err.message}\n`); process.exit(1); }
+  try { await fn(); finish(0); }
+  catch (err) { console.error(`\n${err.message}\n`); finish(1); }
 })();
