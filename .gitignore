@@ -7,3 +7,5 @@ audit-report.json
 fix.txt
 *.raze-backup
 .public-merchants/
+raze.mapping.js
+public-evaluation.json
