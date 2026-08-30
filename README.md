@@ -229,8 +229,11 @@ that fires on correct code is worse than no detector.
 ## Raze as an MCP server
 
 ```bash
-npx raze-mcp          # or: npm run mcp
+npm run mcp           # or: node bin/raze-mcp
 ```
+
+It speaks JSON-RPC on stdout, so it is run by an MCP client rather than by you.
+Running it in a terminal and seeing nothing is correct.
 
 Add it to Claude Code, Cursor, Windsurf or Claude Desktop:
 
