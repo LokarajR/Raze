@@ -9,7 +9,8 @@
     "test:offline": "node test/run-all.js --offline",
     "demo:public": "node examples/public-merchant/lost-payment.js",
     "eval:public": "node test/evaluate-public.js",
-    "live:public": "node test/live-public.js"
+    "live:public": "node test/live-public.js",
+    "chaos": "node test/layer10.test.js"
   },
   "keywords": [],
   "author": "",
