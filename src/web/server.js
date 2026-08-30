@@ -1093,6 +1093,250 @@ function createApp({ pool, databaseUrl, env }) {
     res.json(policy.describe());
   });
 
+  // -------------------------------------------------------------------------
+  // the conversation
+  // -------------------------------------------------------------------------
+  //
+  // One endpoint returns what to ask next; one carries out the answer. The
+  // sequence is deterministic because it decides what gets installed in a
+  // merchant's database — the model answers questions, it does not decide that.
+
+  const ray = require(path.join(RAZE, 'src', 'web', 'ray'));
+
+  app.get('/api/ray/next', localOnly, async (_req, res) => {
+    try {
+      const state = await setupState();
+      const step = ray.nextStep(state);
+
+      // The mapping step is the only one whose content depends on what was
+      // found in the merchant's database rather than on what they have answered.
+      if (step.id === 'mapping') {
+        const proposals = CONNECT.proposals || [];
+        const best = CONNECT.bestTable;
+        if (best && proposals.length) {
+          const mine = proposals.filter((p) => p.spec.table === best);
+          step.say = `I read your schema. Your orders look like they live in **${best}**, `
+            + `keyed on \`${mine[0].spec.key.column}\`.\n\nHere is what I would do when `
+            + `Razorpay tells me a payment was captured:`;
+          step.mapping = {
+            table: best,
+            key: mine[0].spec.key.column,
+            set: mine[0].spec.set,
+            add: mine[0].spec.add,
+            guard: mine[0].spec.guard,
+          };
+          step.action = 'That is right';
+          step.alt = 'Let me correct it';
+          step.note = 'Nothing is armed until you say so.';
+        } else {
+          // Inference declined. It found no column it could key on, or none it
+          // could write — and guessing at which row gets marked paid moves real
+          // money. So the merchant is asked instead.
+          step.say = "I read your schema, and I can't work out your payment model from it "
+            + "on my own — none of the column names tell me which one holds the Razorpay "
+            + "order id, or which one says an order is paid.\n\nI won't guess at that. "
+            + "Tell me, and I'll check every name against your live database before I arm "
+            + "anything.";
+          step.pick = { tables: (CONNECT.tables || []).map((t) => t.name) };
+          step.action = 'Check these against my database';
+        }
+      }
+      res.json({ step, state });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/ray/act', localOnly, async (req, res) => {
+    const { step, values } = req.body || {};
+    try {
+      // ---- keys ------------------------------------------------------------
+      if (step === 'keys') {
+        const keyId = String(values.keyId || '').trim();
+        const keySecret = String(values.keySecret || '').trim();
+        if (!/^rzp_test_/.test(keyId)) {
+          return res.json({ error: 'That is not a Test Mode key. Raze fires real deliveries '
+            + 'when it checks your integration, so it will not touch a live account.' });
+        }
+        const auth = 'Basic ' + Buffer.from(keyId + ':' + keySecret).toString('base64');
+        const r = await fetch('https://api.razorpay.com/v1/payments?count=1',
+          { headers: { authorization: auth } });
+        const body = await r.json();
+        if (!r.ok) {
+          return res.json({ error: (body.error && body.error.description)
+            || 'Razorpay would not accept those keys.' });
+        }
+        CONNECT.razorpay = { keyId, keySecret };
+        await saveSetup({ razorpay_ok: true });
+        return res.json({
+          ok: true,
+          confirm: 'Razorpay account connected',
+          detail: 'Test Mode, verified by calling the API rather than by checking the key format',
+        });
+      }
+
+      // ---- database --------------------------------------------------------
+      if (step === 'database') {
+        const url = String(values.databaseUrl || '').trim();
+        const { Pool } = require('pg');
+        const merchantPool = new Pool({ connectionString: url, max: 4, connectionTimeoutMillis: 8000 });
+        merchantPool.on('error', () => {});
+        await merchantPool.query('SELECT 1');
+
+        const infer = require(path.join(RAZE, 'src', 'infer'));
+        const out = await infer.infer({ pool: merchantPool, corpusPath: LOG });
+
+        const score = (p) => Object.keys(p.spec.set || {}).length
+          + Object.keys(p.spec.add || {}).length * 2
+          + (p.spec.guard ? 2 : 0)
+          + (/razorpay/i.test(p.spec.key.column) ? 3 : 0);
+        const byTable = new Map();
+        for (const p of out.proposals) byTable.set(p.spec.table, (byTable.get(p.spec.table) || 0) + score(p));
+        const ranked = [...byTable.entries()].sort((a, b) => b[1] - a[1]);
+
+        if (CONNECT.merchantPool) await CONNECT.merchantPool.end().catch(() => {});
+        CONNECT.merchantPool = merchantPool;
+        CONNECT.databaseUrl = url;
+        CONNECT.proposals = out.proposals;
+        CONNECT.tables = out.schema.map((t) => ({ name: t.name }));
+        CONNECT.bestTable = ranked.length ? ranked[0][0] : null;
+
+        await saveSetup({ database_ok: true });
+        return res.json({
+          ok: true,
+          confirm: 'Database connected',
+          detail: `${out.schema.length} table(s) read: ${out.schema.map((t) => t.name).join(', ')}`,
+        });
+      }
+
+      // ---- columns for a chosen table --------------------------------------
+      if (step === 'columns') {
+        const target = CONNECT.merchantPool || pool;
+        const r = await target.query(
+          `SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_name = $1 ORDER BY ordinal_position`, [String(values.table || '')]);
+        return res.json({
+          ok: true,
+          columns: r.rows.map((c) => c.column_name),
+          numeric: r.rows.filter((c) => /int|numeric|decimal|money|real|double/i.test(c.data_type))
+            .map((c) => c.column_name),
+        });
+      }
+
+      // ---- the mapping, confirmed or stated --------------------------------
+      if (step === 'mapping') {
+        const table = String(values.table || CONNECT.bestTable || '');
+        const key = String(values.key || '');
+        const status = String(values.status || '');
+        const credited = String(values.credited || '');
+        const expected = values.expected ? String(values.expected) : null;
+
+        if (!table || !key || !status || !credited) {
+          return res.json({ error: 'A table, an order-id column, a status column and a '
+            + 'credited-amount column are all needed before anything can be armed.' });
+        }
+        if (expected && expected === credited) {
+          return res.json({ error: 'The expected amount and the credited amount cannot be '
+            + 'the same column — writing to the figure a payment is checked against '
+            + 'destroys the check.' });
+        }
+
+        const target = CONNECT.merchantPool || pool;
+        const cols = await target.query(
+          'SELECT column_name FROM information_schema.columns WHERE table_name = $1', [table]);
+        const present = new Set(cols.rows.map((r) => r.column_name));
+        const missing = [key, status, credited, expected].filter((c) => c && !present.has(c));
+        if (missing.length) {
+          return res.json({ error: `No such column in "${table}": ${missing.join(', ')}.` });
+        }
+
+        const mapping = require(path.join(RAZE, 'src', 'mapping'));
+        const spec = mapping.normalise('payment.captured', {
+          table,
+          key: { column: key, from: 'payload.payment.entity.order_id' },
+          set: { [status]: { literal: 'paid' } },
+          add: { [credited]: 'payload.payment.entity.amount' },
+          guard: { column: status, notIn: ['refunded'] },
+          insertIfMissing: false,
+        });
+        await mapping.validateAgainstSchema(target, spec);
+
+        CONNECT.chosen = { table, key, status, credited, expected };
+        await saveSetup({
+          mapping_confirmed: true,
+          expected_column: expected,
+          expected_column_absent: !expected,
+        });
+        return res.json({
+          ok: true,
+          confirm: 'Mapping validated against your live schema',
+          detail: `${table} · ${key} · ${status} · ${credited}${expected ? ' · ' + expected : ''}`,
+          integration: ray.buildIntegration({ table, key, status, credited, expected }),
+        });
+      }
+
+      // ---- the two questions -----------------------------------------------
+      if (step === 'sideEffects') {
+        const yes = values.choice === 'yes';
+        await saveSetup({ escalate_only: yes });
+        return res.json({
+          ok: true,
+          confirm: yes ? 'I will always ask before repairing' : 'I may repair clean cases myself',
+          detail: yes
+            ? 'because marking an order paid triggers something else in your application'
+            : 'under a policy you can read, and anything I cannot verify still waits for you',
+        });
+      }
+
+      if (step === 'refund') {
+        await saveSetup({ refund_policy: String(values.choice || 'status') });
+        return res.json({
+          ok: true,
+          confirm: 'Refund handling set',
+          detail: values.choice === 'subtract'
+            ? 'a refund reverses the amount as well as the status'
+            : 'a refund changes the status and leaves the amount as charged',
+        });
+      }
+
+      // ---- the number that ends setup ---------------------------------------
+      if (step === 'backfill') {
+        const rz = CONNECT.razorpay || razorpay;
+        const chosen = CONNECT.chosen || {};
+        const { computeImpact } = require(path.join(RAZE, 'src', 'impact'));
+        const impact = await computeImpact({
+          pool: CONNECT.merchantPool || pool,
+          razorpay: rz,
+          results: [],
+          table: chosen.table || ORDERS_TABLE,
+          keyColumn: chosen.key || KEY_COLUMN,
+          amountColumn: chosen.credited || AMOUNT_COLUMN,
+        });
+        const live = impact.razorpay;
+        if (!live.available) return res.json({ error: live.reason });
+
+        await saveSetup({
+          backfill_at: new Date(),
+          backfill_checked: live.capturedCount,
+          backfill_missing: live.unrecorded.length,
+          backfill_paise: live.unrecordedPaise,
+        });
+        return res.json({
+          ok: true,
+          confirm: 'Checked against Razorpay',
+          detail: `${live.capturedCount} settled payment(s), `
+            + `${live.unrecorded.length} not in your database`,
+          backfill: {
+            checked: live.capturedCount,
+            missing: live.unrecorded.length,
+            paise: live.unrecordedPaise,
+            orders: live.unrecorded.slice(0, 10),
+          },
+        });
+      }
+
+      res.json({ error: 'unknown step: ' + step });
+    } catch (err) { res.json({ error: err.message }); }
+  });
+
   app.get('/api/state', async (_req, res) => {
     const out = { mode: S.mode, deliveries: S.deliveries.slice(0, 60), scans: S.scans };
     try {
