@@ -71,6 +71,13 @@ function lifecycle(byKey) {
 }
 
 function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
+  // The paise figure a probe's finding is worth. Read from the delivery itself
+  // rather than assumed, so the impact figures downstream are the merchant's
+  // own money and not a constant.
+  const amountOf = (f) => {
+    try { return JSON.parse(f.body.toString()).payload.payment.entity.amount; }
+    catch { return 0; }
+  };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function send(f, overrides = {}) {
@@ -201,7 +208,9 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
           pass: s.credit_count === 1,
           observed: `credit_count=${s.credit_count}, credited=${s.credited_paise} paise`,
           evidence: { event_id: ladder[0].eventId, deliveries_sent: 2,
-            bodies_byte_identical: ladder[0].body.equals(ladder[1].body) },
+            bodies_byte_identical: ladder[0].body.equals(ladder[1].body),
+            credit_count: s.credit_count, credited_paise: s.credited_paise,
+            amount_paise: amountOf(ladder[0]) },
         };
       },
     },
@@ -225,7 +234,8 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
         return {
           pass: after.status === 'refunded' && after.credited_paise === 0,
           observed: `status=${after.status}, credited=${after.credited_paise} paise (was ${paid.credited_paise})`,
-          evidence: { refund_event_id: refundLadder[0].eventId, deliveries_sent: refundLadder.length },
+          evidence: { refund_event_id: refundLadder[0].eventId, deliveries_sent: refundLadder.length,
+            credited_paise_before: paid.credited_paise, credited_paise_after: after.credited_paise },
         };
       },
     },
@@ -260,7 +270,8 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
           observed: s.credit_count === 0
             ? `rejected with HTTP ${res.status}`
             : `ACCEPTED — credited ${s.credited_paise} paise on a forged signature`,
-          evidence: { http_status: res.status, signature_sent: 'sixty-four zeroes' },
+          evidence: { http_status: res.status, signature_sent: 'sixty-four zeroes',
+            credited_paise: s.credited_paise, credit_count: s.credit_count },
         };
       },
     },
@@ -301,7 +312,8 @@ function createAuditor({ targetUrl, pool, logFile, webhookSecret }) {
         return {
           pass: retried.credited_paise === single.credited_paise && retried.credit_count === single.credit_count,
           observed: `single delivery credited ${single.credited_paise}, with retries credited ${retried.credited_paise}`,
-          evidence: { single_credit_count: single.credit_count, retried_credit_count: retried.credit_count },
+          evidence: { single_credit_count: single.credit_count, retried_credit_count: retried.credit_count,
+            single_credited_paise: single.credited_paise, retried_credited_paise: retried.credited_paise },
         };
       },
     },

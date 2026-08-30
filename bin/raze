@@ -406,6 +406,9 @@ const commands = {
   watch: async () => require(path.join(RAZE, 'src', 'watch-command'))({
     flag, has, RAZE, deps: { connect, migrate, shutdown },
   }),
+  web: async () => require(path.join(RAZE, 'src', 'web-command'))({
+    env, flag, RAZE, deps: { connect, migrate, shutdown },
+  }),
   insights: async () => require(path.join(RAZE, 'src', 'insights-command'))({
     RAZE, deps: { connect, migrate, shutdown },
   }),
@@ -428,7 +431,7 @@ const commands = {
  * the sockets out. Waiting for stdout to drain before exiting keeps piped
  * output intact, which a bare process.exit() would truncate.
  */
-const DAEMONS = new Set(['up', 'watch', 'protect']);
+const DAEMONS = new Set(['up', 'watch', 'protect', 'web']);
 
 function finish(code) {
   if (DAEMONS.has(cmd)) { process.exitCode = code; return; }

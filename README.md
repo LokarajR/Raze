@@ -226,6 +226,61 @@ test would be a form of simulation.
 zero findings, every time, and the test suite asserts exactly that. A detector
 that fires on correct code is worse than no detector.
 
+## The console
+
+```bash
+npm run web            # http://127.0.0.1:7000
+```
+
+A terminal transcript is not a demonstration. The console is the same engine —
+the same five probes, the same runtime, the same reconciler — behind a page you
+can point at a merchant and watch.
+
+It runs in five stages, in the order a merchant actually experiences them:
+
+1. **The merchant.** Paste a GitHub URL. Raze clones it, finds the code that
+   receives Razorpay webhooks, and shows the defects against the real source,
+   with the line and the excerpt.
+2. **What happens without Raze.** A merchant is started for real, with its own
+   database. The probes fire genuine captured Razorpay deliveries at it and the
+   result is read back out of the merchant's own table.
+3. **What it costs.** Money, derived from what just happened. Every figure names
+   where it came from.
+4. **The same code, behind Raze.** The handler is not modified. Identical probes.
+5. **Live Razorpay.** Create a real Test Mode payment link, pay it, and watch the
+   delivery arrive. Then sever delivery entirely and let reconciliation recover
+   the payment by asking Razorpay what it recorded.
+
+When it is deployed, this process is the endpoint you register in the Razorpay
+dashboard. Deliveries that arrive are genuine Razorpay POSTs; the console records
+each one byte-for-byte and forwards it unchanged — raw bytes and all headers,
+because the signature is computed over exactly those bytes.
+
+```bash
+docker build -t raze . && docker run -p 8080:8080   -e DATABASE_URL=... -e RAZORPAY_KEY_ID=... -e RAZORPAY_KEY_SECRET=...   -e RAZORPAY_WEBHOOK_SECRET=... raze
+```
+
+### What the money figures are, and are not
+
+Two rules cost the console its headline numbers and are worth stating plainly.
+
+**An order nobody paid for is not a loss.** The Expectation Ledger separates
+*abandoned* from *failed to record*, and only the second is money. Counting
+abandonment as lost revenue would inflate the case.
+
+**The projection is not derived from the probes.** Four of five probe categories
+failing does not mean four in five payments lose money — they are categories of
+defect, not a sample of traffic. Nor does it use the corpus retry rate: 80% of
+events in the 796-delivery measurement received more than one delivery, but that
+is a property of the experiment, which deliberately failed deliveries so the
+retry ladder could be measured. It records what Razorpay does when a delivery
+fails, not how often failure happens.
+
+So the number that decides the size of the loss — how often delivery to this
+merchant fails — is asked for, not assumed, and there is no projection until it
+is supplied. Raze measures the real rate from the merchant's own traffic once it
+is running.
+
 ## Commands
 
 ### Everything at once

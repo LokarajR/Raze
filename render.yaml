@@ -5,8 +5,8 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
-      - key: MODE
-        value: protected
+      - key: PUBLIC_URL
+        sync: false
       - key: RAZORPAY_WEBHOOK_SECRET
         sync: false
       - key: RAZORPAY_KEY_ID

@@ -10,7 +10,8 @@
     "demo:public": "node examples/public-merchant/lost-payment.js",
     "eval:public": "node test/evaluate-public.js",
     "live:public": "node test/live-public.js",
-    "chaos": "node test/layer10.test.js"
+    "chaos": "node test/layer10.test.js",
+    "web": "node bin/raze web"
   },
   "keywords": [],
   "author": "",
@@ -18,7 +19,8 @@
   "description": "Keeps merchant business state correct when Razorpay webhook delivery is duplicated, delayed, rejected, or absent.",
   "dependencies": {
     "embedded-postgres": "^18.4.0-beta.17",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "express": "^5.2.1"
   },
   "bin": {
     "raze": "./bin/raze"
@@ -27,7 +29,6 @@
     "body-parser": "^2.3.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1",
     "joi": "^18.2.5",
     "joi-objectid": "^4.0.2",
     "jsonwebtoken": "^9.0.3",
