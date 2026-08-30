@@ -1,0 +1,13 @@
+#!/usr/bin/env node
+'use strict';
+
+// Raze as an MCP server, over stdio.
+//
+// Kept as its own entry point rather than a `raze` subcommand: an MCP client
+// speaks JSON-RPC on stdout, so anything else printed there corrupts the
+// protocol. Nothing in this path may write to stdout except the server.
+
+require('../src/mcp/server').main().catch((err) => {
+  process.stderr.write(`raze-mcp failed to start: ${err.message}\n`);
+  process.exit(1);
+});

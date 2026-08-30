@@ -226,6 +226,86 @@ test would be a form of simulation.
 zero findings, every time, and the test suite asserts exactly that. A detector
 that fires on correct code is worse than no detector.
 
+## Raze as an MCP server
+
+```bash
+npx raze-mcp          # or: npm run mcp
+```
+
+Add it to Claude Code, Cursor, Windsurf or Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "raze": {
+      "command": "node",
+      "args": ["/absolute/path/to/raze/bin/raze-mcp"],
+      "env": {
+        "DATABASE_URL": "postgres://...",
+        "RAZORPAY_KEY_ID": "rzp_test_...",
+        "RAZORPAY_KEY_SECRET": "...",
+        "RAZE_ORDERS_TABLE": "shop_orders"
+      }
+    }
+  }
+}
+```
+
+### Why this is not another payment MCP
+
+Every published payment MCP — Razorpay's own, Stripe's, Square's, PayPal's,
+Dwolla's, and the community ones — is provider access. Create an order, fetch a
+payment, issue a refund, list webhook subscriptions. They answer *what does the
+provider say*.
+
+None of them answer the question a merchant actually loses money on:
+
+> This event was delivered twice after our process crashed. Does exactly one
+> entitlement, one invoice, one ledger posting exist in **our** database?
+
+Answering that needs an engine rather than an API wrapper: a durable inbox, a
+uniqueness constraint on provider event identity, a state machine that refuses
+illegal transitions, an outbox for side effects, reconciliation against provider
+truth. Raze has those and they are tested; the MCP server is the interface to
+them, not a reimplementation.
+
+| | provider MCPs | Raze MCP |
+|---|---|---|
+| Create orders, payments, refunds | yes | no — use theirs |
+| List and configure webhook subscriptions | yes | no — use theirs |
+| Store the raw delivery before processing | no | yes |
+| Deduplicate on provider event identity | no | yes |
+| Merchant order state machine | no | yes |
+| Detect merchant/provider divergence | partly (settlements) | yes |
+| Repair merchant state | no | yes, behind approval |
+| Separate "never paid" from "we lost it" | no | yes |
+
+### Reads are free; writes are not
+
+Eight of the nine tools are read-only. `raze_apply_recovery` is the only one
+that changes merchant state, and it cannot be called on its own: a plan comes
+from `raze_propose_recovery`, and the plan is bound by a fingerprint to the exact
+state it was derived from. If anything moves between proposing and approving —
+including the payment being applied by someone else — the approval is refused
+rather than honoured against a world that no longer exists.
+
+An approval token is single-use, expires in ten minutes, and lives only in
+memory. A token that survived a restart would be a standing authorisation to
+move money, which is not what an approval is.
+
+```
+raze_explain_order        the full trail for one order, from three
+                          independent sources, reporting their disagreement
+raze_event_trail          deliveries as durably recorded, before processing
+raze_inspect_integration  defects in the merchant's handler, with file and line
+raze_audit_endpoint       five real captured deliveries fired at a live endpoint
+raze_find_divergence      settled at Razorpay, never applied by the merchant
+raze_simulate_recovery    what recovery would do; writes nothing
+raze_propose_recovery     a plan and an approval token; writes nothing
+raze_apply_recovery       the only tool that writes, and only with approval
+raze_sweep_expectations   recovered / failed / abandoned, told apart
+```
+
 ## The console
 
 ```bash

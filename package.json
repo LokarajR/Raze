@@ -11,19 +11,22 @@
     "eval:public": "node test/evaluate-public.js",
     "live:public": "node test/live-public.js",
     "chaos": "node test/layer10.test.js",
-    "web": "node bin/raze web"
+    "web": "node bin/raze web",
+    "mcp": "node bin/raze-mcp"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "description": "Keeps merchant business state correct when Razorpay webhook delivery is duplicated, delayed, rejected, or absent.",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "embedded-postgres": "^18.4.0-beta.17",
-    "pg": "^8.23.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
   },
   "bin": {
-    "raze": "./bin/raze"
+    "raze": "bin/raze",
+    "raze-mcp": "bin/raze-mcp"
   },
   "devDependencies": {
     "body-parser": "^2.3.0",
