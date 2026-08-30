@@ -362,7 +362,6 @@ move money, which is not what an approval is.
 raze_explain_order        the full trail for one order, from three
                           independent sources, reporting their disagreement
 raze_event_trail          deliveries as durably recorded, before processing
-raze_inspect_integration  defects in the merchant's handler, with file and line
 raze_audit_endpoint       five real captured deliveries fired at a live endpoint
 raze_find_divergence      settled at Razorpay, never applied by the merchant
 raze_simulate_recovery    what recovery would do; writes nothing
@@ -457,7 +456,6 @@ raze init                   migrations and configuration check
 raze status                 protection state and reconciliation health
 raze insights               what Raze has learned from your own traffic
 raze audit [--target ...]   five probes against real captured deliveries
-raze scan --file PATH       known defect patterns in a handler, without running
                             it. Deterministic, offline, no model.
 raze reconcile              one reconciliation pass now
 raze ledger [--sweep]       expectations; --sweep classifies the overdue ones
@@ -583,7 +581,6 @@ those become incidents.
 ## Proof against code we did not write
 
 ```
-npm run eval:public   scan ten real integrations       ~2s
 npm run live:public   drive two of them with the real ladder
 npm run demo:public   one of them losing a payment, then not
 ```
@@ -636,9 +633,7 @@ mapping was read off their own handler: set amount, receipt, created_at and flag
 on the row keyed by order id, only when flag is not already set. **Their intent
 without their bug.**
 
-A pattern match is a signal about a shape of code, not a verdict on someone
-else's running system, and matching nothing means unrecognised rather than
-correct.
+Raze does not claim anything from reading code. Every finding in this project comes from a delivery that was actually sent and a database row that was actually read afterwards — behaviour, not shape.
 
 ## Tests
 
@@ -715,9 +710,10 @@ with the process.
 npm run test:offline
 ```
 
-58 assertions across six layers: the runtime, the audit probes, the declarative
-mappings, the learning discipline, the pattern detector. No credentials, no
-model, nothing to configure.
+90 assertions across ten layers with no credentials, 110 with: the runtime, the
+audit probes, the declarative mappings, the learning discipline, the unattended
+repair policy, and the control that proves the probes find nothing on correct
+code. No model is involved in any of it.
 
 The bundled deliveries in `measurement/` are real captured bytes, but the secret
 they were signed under is not in this repository and never will be. Rather than
@@ -751,7 +747,6 @@ meaning. Without credentials they are reported as skipped, never as passed.
 ### Step 2 — see a real integration fail, then not
 
 ```bash
-npm run eval:public     # scan ten real public integrations   ~2s
 npm run demo            # broken merchant vs the same code protected
 ```
 
@@ -779,7 +774,7 @@ add `--url https://your-public-host/webhook` to register the webhook too.
 | | Node + git | Razorpay Test keys | public HTTPS URL | a model |
 |---|:-:|:-:|:-:|:-:|
 | `npm run test:offline`, `npm run chaos` | yes | — | — | — |
-| `npm run demo`, `eval:public`, `raze scan` | yes | — | — | — |
+| `npm run demo` | yes | — | — | — |
 | `raze up`, `reconcile`, `ledger`, `backfill` | yes | **yes** | — | — |
 | deliveries arriving in 0.23s instead of on the reconcile interval | yes | yes | **yes** | — |
 | `raze fix` (appendix, optional) | yes | — | — | **yes** |
@@ -868,11 +863,16 @@ raze/
 - **MongoDB has no shared transaction with the inbox.** The idempotency guard is
   inside the update instead, which is sound for Raze's own writes and does not
   extend to yours.
-- **Inference proposes, never applies.** On an unfamiliar schema it proposes
-  nothing rather than guessing — a wrong guess about which row is marked paid
-  moves real money.
-- **`raze scan` recognises only what it knows.** Matching no pattern means
-  unrecognised, not correct. `raze audit` is what tests behaviour.
+- **Inference proposes, never applies, and asks where it cannot tell.** It finds
+  the key by reading the column's contents when its name gives nothing away, but
+  it cannot tell a status column from a money column on a schema whose names are
+  the author's own. It declines rather than guessing, and the merchant states
+  those columns instead — validated against the live schema before anything is
+  armed. A wrong guess about which row is marked paid moves real money.
+- **The expected-amount column is never inferred.** Two integer columns look
+  identical from outside, and writing to the one the payment is checked against
+  destroys the check. Without that column Raze reports divergence and repairs
+  nothing.
 - **`raze fix` is not reliable.** Three runs against the same file: two full
   repairs, one patch that broke the merchant outright. It is a demonstration, and
   the verifier is what makes it safe to run at all.
