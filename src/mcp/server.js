@@ -537,46 +537,91 @@ function buildServer() {
           { approved_state: plan.steps, current_merchant: trail.merchant });
       }
 
+      // The repair goes in as a delivery, not as an UPDATE.
+      //
+      // Writing the merchant's row directly here would be a second code path
+      // for the same outcome, and a repair that does not run the logic a real
+      // delivery runs is a repair nobody should trust. Reconciliation already
+      // does it correctly — synthesize the event Razorpay would have sent and
+      // put it in the inbox, so it is deduplicated, ordered and applied by
+      // exactly the same worker, inside the same transaction, as live traffic.
+      //
+      // The synthetic event id is derived from the payment id, so approving the
+      // same recovery twice inserts nothing the second time.
       const pool = await db();
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await client.query(
-          `INSERT INTO "${ORDERS_TABLE}" (order_id, status, credited_paise, credit_count)
-           VALUES ($1,'paid',$2,1)
-           ON CONFLICT (order_id) DO UPDATE
-             SET status='paid',
-                 credited_paise = EXCLUDED.credited_paise,
-                 credit_count   = 1`,
-          [order_id, payment.amount]
-        );
-        // The same row and the same rank the runtime would have written for a
-        // payment.captured delivery, so a later real delivery of that event is
-        // recognised as stale instead of applying the credit again.
-        await client.query(
-          `INSERT INTO raze_subject_state (subject_id, rank, event_type)
-           VALUES ($1, 2, 'payment.captured')
-           ON CONFLICT (subject_id) DO UPDATE
-             SET rank = GREATEST(raze_subject_state.rank, EXCLUDED.rank),
-                 event_type = EXCLUDED.event_type,
-                 updated_at = now()`,
-          [order_id]
-        );
-        await client.query('COMMIT');
-      } catch (err) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw err;
-      } finally { client.release(); }
+      const event = {
+        event: 'payment.captured',
+        _raze_synthetic: true,
+        _raze_note: 'reconstructed from the Razorpay API after an approved recovery',
+        // orderTrail returns a trimmed view of the payment for reading; the
+        // entity a mapping resolves against needs the fields a real delivery
+        // carries. order_id above all: without it the key path resolves to
+        // nothing, the mapping writes nothing, and the inbox row is still
+        // marked applied — a repair that reports success and does nothing.
+        payload: { payment: { entity: { ...payment, order_id } } },
+      };
+      const raw = Buffer.from(JSON.stringify(event), 'utf8');
+      const sha = crypto.createHash('sha256').update(raw).digest('hex');
+      const eventId = 'recon_' + payment.id;
+
+      const ins = await pool.query(
+        `INSERT INTO raze_inbox
+           (event_id, event_type, raw_body, raw_body_sha256, signature, headers, subject_id, source)
+         VALUES ($1,'payment.captured',$2,$3,NULL,'{}'::jsonb,$4,'recovery')
+         ON CONFLICT (event_id) DO NOTHING`,
+        [eventId, raw, sha, order_id]
+      );
+
+      // Drain it through the runtime the merchant already runs, so the mapping,
+      // the state machine and the guards all apply.
+      const raze = require(path.join(RAZE, 'src', 'runtime'));
+      const rz = raze.create({ db: pool, webhookSecret: resolveDemoSecret(env).secret });
+      const mapping = require(path.join(RAZE, 'src', 'mapping'));
+      const m = mapping.attach(rz, pool);
+      await m.map('payment.captured', {
+        table: ORDERS_TABLE,
+        key: { column: 'order_id', from: 'payload.payment.entity.order_id' },
+        set: { status: { literal: 'paid' } },
+        add: { credited_paise: 'payload.payment.entity.amount', credit_count: { literal: 1 } },
+        guard: { column: 'status', notIn: ['refunded'] },
+      });
+      await rz.drain();
 
       PENDING.delete(approval_token);
       const after = await orderTrail(order_id);
+
+      // Report what actually happened, not what was attempted.
+      //
+      // The synthetic event id is shared with reconciliation on purpose: one
+      // identity per payment is what stops the two paths crediting the same
+      // money twice. The consequence is that a payment reconciliation already
+      // applied makes this insert a no-op — which is right, and must be said
+      // rather than reported as a fresh repair.
+      const landed = !!(after.merchant && Number(after.merchant.credited_paise) > 0);
+      const wasNew = ins.rowCount > 0;
+
+      if (!landed) {
+        return fail(
+          wasNew
+            ? 'The repair was queued and processed but the order still does not reflect the '
+              + 'payment. The mapping may not match this table.'
+            : 'Nothing was applied: this payment was already taken in by an earlier '
+              + 'reconciliation, so there was no new work to do — but the order still does '
+              + 'not reflect it, which means the earlier attempt did not land either.',
+          { order_id, merchant: after.merchant, already_taken_in: !wasNew }
+        );
+      }
+
       return ok({
         order_id,
         applied: plan.steps,
         merchant_now: after.merchant,
         verdict: after.verdict,
-        note: 'Recorded in raze_subject_state, so a later delivery of the same event cannot '
-          + 'apply it a second time.',
+        route: wasNew
+          ? 'Queued as a delivery and applied by the same worker that handles live webhooks.'
+          : 'Already taken in by an earlier reconciliation; state confirmed, nothing re-applied.',
+        note: 'One event identity per payment, shared with reconciliation, so neither path '
+          + 'can credit this money twice.',
       });
     } catch (err) { return fail(err.message); }
   });
@@ -852,9 +897,75 @@ function buildServer() {
         out.razorpay = { unavailable: 'no Razorpay credentials configured' };
       }
 
-      out.next = out.razorpay && out.razorpay.not_applied
+      // ---- which of the five states -------------------------------------
+      //
+      // Two states exist because "fine" and "broken" is a lie that gets
+      // merchants hurt. STALE means the runtime is armed but nobody has
+      // checked recently; BLIND means Razorpay could not be reached at all.
+      // Every competing tool reports both as green. "I do not know" is a
+      // different answer from "nothing is wrong", and conflating them is the
+      // one thing this tool must never do.
+      //
+      // The timestamp that matters is the last SUCCESSFUL run, not the last
+      // attempt. A run that failed every minute for an hour would otherwise
+      // look like continuous coverage.
+      let lastSuccess = null;
+      let lastAttempt = null;
+      try {
+        const r = await pool.query(
+          `SELECT max(ran_at) FILTER (WHERE ok) AS ok_at, max(ran_at) AS any_at
+             FROM raze_reconcile_runs`);
+        lastSuccess = r.rows[0].ok_at;
+        lastAttempt = r.rows[0].any_at;
+      } catch { /* table absent: treated as never run */ }
+
+      const armed = (() => {
+        try { return out.expectations && Object.keys(out.expectations).length > 0; }
+        catch { return false; }
+      })();
+
+      const STALE_AFTER_MS = 15 * 60 * 1000;
+      const ageMs = lastSuccess ? Date.now() - new Date(lastSuccess).getTime() : null;
+      const reachable = !!(out.razorpay && out.razorpay.unavailable === undefined);
+
+      let state;
+      let says;
+      if (!reachable) {
+        state = 'BLIND';
+        says = 'I cannot reach Razorpay right now, so I do not know whether anything has '
+          + 'drifted. This is not the same as everything being fine.';
+      } else if (!armed) {
+        state = 'UNARMED';
+        says = 'I am not watching anything yet. Confirm how your orders map to payments '
+          + 'and I will start checking.';
+      } else if (out.razorpay.not_applied > 0) {
+        state = 'DIVERGED';
+        says = 'Rs ' + (out.razorpay.at_risk_paise / 100).toFixed(2) + ' at risk across '
+          + out.razorpay.not_applied + ' payment(s) Razorpay captured that your database '
+          + 'never applied.';
+      } else if (lastSuccess === null || ageMs > STALE_AFTER_MS) {
+        state = 'STALE';
+        says = lastSuccess
+          ? 'I cannot vouch for the last ' + Math.round(ageMs / 60000) + ' minutes — my last '
+            + 'successful check was ' + new Date(lastSuccess).toISOString() + '.'
+          : 'Nothing has been checked yet, so I cannot vouch for anything.';
+      } else {
+        state = 'PROTECTED';
+        says = 'Everything is accounted for. Last checked ' + Math.round(ageMs / 1000)
+          + ' seconds ago.';
+      }
+
+      out.state = state;
+      out.says = says;
+      out.last_successful_check = lastSuccess;
+      out.last_attempted_check = lastAttempt;
+      out.next = state === 'DIVERGED'
         ? 'raze_explain_order on any order above, then raze_propose_recovery'
-        : 'nothing is diverging right now';
+        : state === 'UNARMED'
+          ? 'raze_propose_mapping, then raze_watch_orders once the merchant approves'
+          : state === 'STALE' || state === 'BLIND'
+            ? 'run reconciliation before telling the merchant anything is fine'
+            : 'nothing to do';
       return ok(out);
     } catch (err) { return fail(err.message); }
   });

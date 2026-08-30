@@ -213,6 +213,13 @@ async function main() {
     } else {
       const oid = settled.order_id;
       await pool.query('DELETE FROM mcp_orders WHERE order_id = $1', [oid]);
+      // Construct the precondition the test is about: this payment has never
+      // been taken in. Reconciliation may have taken it in during an earlier
+      // run, and recovery deliberately shares one event identity per payment
+      // with reconciliation so neither can double-credit — so without this the
+      // insert is a correct no-op and the test measures nothing.
+      await pool.query('DELETE FROM raze_inbox WHERE event_id = $1', ['recon_' + settled.id]);
+      await pool.query('DELETE FROM raze_subject_state WHERE subject_id = $1', [oid]);
 
       const proposed = payload(await c.send('tools/call', {
         name: 'raze_propose_recovery', arguments: { order_id: oid },
