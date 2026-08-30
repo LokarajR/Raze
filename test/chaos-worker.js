@@ -26,7 +26,7 @@ async function main() {
   const pool = new Pool({ connectionString: databaseUrl, max: 4 });
   pool.on('error', () => {});
 
-  const rz = raze.create({ db: pool, webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET });
+  const rz = raze.create({ db: pool, webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET, allowUnsigned: !process.env.RAZORPAY_WEBHOOK_SECRET });
 
   rz.on('payment.captured', async (event, tx) => {
     const p = event.payload.payment.entity;

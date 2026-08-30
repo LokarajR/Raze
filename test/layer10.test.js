@@ -126,6 +126,14 @@ async function main() {
   };
 
   const payments = ladders();
+
+  // Cases that need the live Razorpay API are skipped, not silently dropped.
+  // Asking Razorpay what it recorded is the point of those cases and cannot be
+  // stubbed without destroying their meaning. A signature check is likewise
+  // meaningless with no secret to verify against.
+  const haveCreds = !!(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
+  const haveSecret = !!env.RAZORPAY_WEBHOOK_SECRET;
+  let skipped = 0;
   console.log(`  ${payments.length} distinct payment(s), full real ladders\n`);
 
   // =====================================================================
@@ -200,7 +208,7 @@ async function main() {
   }
 
   // Whatever survived the kills, finish the work in-process.
-  const rzFinish = raze.create({ db: pool, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET });
+  const rzFinish = raze.create({ db: pool, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET, allowUnsigned: !env.RAZORPAY_WEBHOOK_SECRET });
   rzFinish.on('payment.captured', async (event, tx) => {
     const p = event.payload.payment.entity;
     await tx.query(
@@ -241,7 +249,7 @@ async function main() {
   // 2. A handler that fails at random, mixed with duplicates and forgeries
   // =====================================================================
   await reset();
-  const rzFlaky = raze.create({ db: pool, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET });
+  const rzFlaky = raze.create({ db: pool, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET, allowUnsigned: !env.RAZORPAY_WEBHOOK_SECRET });
   let attempts = 0;
   let refusals = 0;
   const failuresPerEvent = new Map();
@@ -312,21 +320,41 @@ async function main() {
   const flaky = await pool.query(
     `SELECT order_id, credited_paise, credit_count FROM ${TABLE} ORDER BY order_id`
   );
+  // With no secret, the forged copies are accepted — correctly, because nothing
+  // can distinguish them — so each order is credited twice. That is a property of
+  // running unsigned, not a failure of exactly-once, and the expectation adjusts
+  // rather than pretending the forgeries were not delivered.
+  const perOrder = haveSecret ? 1 : 2;
   const flakyOnce = flaky.rows.every(
-    (r) => Number(r.credit_count) === 1 && Number(r.credited_paise) === expectedByOrder.get(r.order_id)
+    (r) => Number(r.credit_count) === perOrder
+      && Number(r.credited_paise) === expectedByOrder.get(r.order_id) * perOrder
   );
-  check(`a handler that fails its first ${FAIL_FIRST} attempts (${refusals} of ${attempts} calls) still applies each payment exactly once`,
-    refusals === payments.length * FAIL_FIRST && flakyOnce && flaky.rowCount === payments.length,
+  check(`a handler that fails its first ${FAIL_FIRST} attempts (${refusals} of ${attempts} calls) still applies each delivered event exactly once`,
+    // Unsigned, the forged copies are accepted as distinct events too, so twice
+    // as many events are retried. Counting only the genuine ones would make this
+    // assertion fail for the right reason and the wrong number.
+    refusals === payments.length * perOrder * FAIL_FIRST
+      && flakyOnce && flaky.rowCount === payments.length,
     flaky.rows.map((r) => `${r.order_id}=${r.credit_count}x${r.credited_paise}`).join(' '));
 
-  check(`every forged delivery was rejected before reaching the handler (${rejected})`,
-    rejected === payments.length, `rejected=${rejected} expected=${payments.length}`);
+  if (haveSecret) {
+    check(`every forged delivery was rejected before reaching the handler (${rejected})`,
+      rejected === payments.length, `rejected=${rejected} expected=${payments.length}`);
+  } else {
+    console.log('  SKIP  forged deliveries rejected — no webhook secret to verify against');
+    skipped++;
+  }
 
   // =====================================================================
   // 3. Deliveries dropped entirely — reconciliation is the only path left
   // =====================================================================
   await reset();
-  const rec = createReconciler({
+  if (!haveCreds) {
+    console.log('  SKIP  dropped deliveries recovered by reconciliation — needs Razorpay credentials');
+    console.log('  SKIP  a second reconciliation does not double-apply');
+    skipped += 2;
+  } else {
+    const rec = createReconciler({
     db: pool,
     razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
     // Nothing has been applied, so nothing is known — the strongest form of
@@ -337,7 +365,7 @@ async function main() {
   });
   const run = await rec.runOnce();
 
-  const rzRecovered = raze.create({ db: pool, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET });
+  const rzRecovered = raze.create({ db: pool, webhookSecret: env.RAZORPAY_WEBHOOK_SECRET, allowUnsigned: !env.RAZORPAY_WEBHOOK_SECRET });
   rzRecovered.on('payment.captured', async (event, tx) => {
     const p = event.payload.payment.entity;
     await tx.query(
@@ -374,6 +402,8 @@ async function main() {
     doubled.rows[0].n === 0, `${doubled.rows[0].n} order(s) credited more than once`);
 
   // =====================================================================
+  }
+
   // 4. The database goes away mid-run
   // =====================================================================
   const survived = await (async () => {
@@ -402,7 +432,10 @@ async function main() {
 
   await reset();
   await shutdown(pool);
-  console.log(`\n${pass}/${pass + fail} passed   (seed ${SEED})\n`);
+  const skipNote = skipped ? `, ${skipped} skipped without credentials` : '';
+  console.log(`
+${pass}/${pass + fail} passed${skipNote}   (seed ${SEED})
+`);
   process.exit(fail ? 1 : 0);
 }
 

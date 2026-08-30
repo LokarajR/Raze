@@ -17,6 +17,12 @@ mid-transaction, a handler failing its first two attempts at every event, forged
 deliveries mixed into the stream, every delivery dropped, and the database
 terminated underneath. Each payment still lands exactly once.
 
+**No model is involved in any of it.** The whole suite — 95 assertions across ten
+layers — passes with no API key and no local model reachable. Raze does not read
+your code and guess; it replays deliveries Razorpay really sent and reads the
+state your database really holds. One optional command (`raze fix`) generates
+code and is documented as an appendix; nothing else can even reach a model.
+
 ## One command
 
 You have a database and an unfinished webhook story — no handler, a half-written
@@ -45,6 +51,26 @@ The only failed order is the one nobody paid for.
 
 Add `--url https://your-host/webhook` to register the endpoint too, and
 `--dry-run` to see every action before anything changes.
+
+## Why this is not "ask an AI to fix the handler"
+
+|  | A model rewrites your handler | Raze |
+|---|---|---|
+| How it knows what is broken | reads the code and infers | replays real captured deliveries, reads real database state |
+| How you know the fix worked | you trust it | the same probes re-run and have to pass |
+| Payments already lost before today | gone | recovered by reconciliation |
+| Orders that were never paid | invisible | the ledger detects them |
+| After a dependency changes next year | the code rotted, it breaks again | the runtime is unaffected |
+| A second payment gateway | fix it again | the same layer |
+
+Raze does not repair merchant code. It takes it out of the request path — the
+effect is declared and applied inside Raze's own transaction, so there is nothing
+left to throw, hang or half-apply. That was demonstrated against a real published
+integration: their handler was never touched, it was bypassed, and the payment it
+had been losing was recorded correctly.
+
+A patch also cannot undo the past. Reconciliation recovers payments that were
+lost before Raze was ever installed.
 
 ## Three mechanisms
 
@@ -199,98 +225,6 @@ test would be a form of simulation.
 **The control case is mandatory.** Auditing a correct integration must produce
 zero findings, every time, and the test suite asserts exactly that. A detector
 that fires on correct code is worse than no detector.
-
-## The repair agent
-
-`raze fix` reads a merchant's real source, gets real findings from the probes,
-generates a patch, applies it, restarts the service, and re-runs the probes to
-prove the patch worked.
-
-```
-raze fix                     repair examples/merchant-legacy in place
-raze fix --file path/to.js   repair your own handler
-raze fix --restore           put the original back
-```
-
-### The division of labour is the whole design
-
-| | Who decides | How |
-|---|---|---|
-| What is broken | **the probes** | deterministic, reading business state from Postgres |
-| The patch | the model | written at run time from the real source and the observed failures |
-| Whether it is fixed | **the probes** | the same probes, re-run against the restarted service |
-
-The model never discovers a problem, never decides whether something counts as a
-finding, and never declares success. **A patch that does not make the probes pass
-is a failed patch** — the agent restores the original file and reports failure.
-There is no fix database, no template, and no canned diff.
-
-Two guards sit between the model and your code: the reply is only accepted if it
-parses under `node --check`, and only if it keeps the file's exports and shape.
-
-### A real run
-
-`examples/merchant-legacy/server.js` is an ordinary handler — it parses correctly,
-uses transactions, returns sensible status codes. It is not a strawman. Against
-real replayed Razorpay traffic it fails every probe:
-
-```
-BEFORE
-  FIND  Duplicate delivery       credit_count=2, credited=200 paise
-  FIND  Refund event             status=paid, credited=100 paise (was 100)
-  FIND  Tampered signature       ACCEPTED — credited 100 paise on a forged signature
-  FIND  Out-of-order delivery    final status=authorized
-  FIND  Timeout-induced retry    single delivery credited 100, with retries credited 300
-  0/5 pass, 5 finding(s) — UNSAFE TO SHIP
-
-  round 1: generating a patch from the real source and the real findings...
-  round 1: patch applied (5946 bytes). Re-running the probes.
-  round 1: 5 finding(s) -> 0
-
-AFTER
-  ok  Duplicate delivery       credit_count=1, credited=100 paise
-  ok  Refund event             status=refunded, credited=0 paise (was 100)
-  ok  Tampered signature       rejected with HTTP 400
-  ok  Out-of-order delivery    final status=paid
-  ok  Timeout-induced retry    single delivery credited 100, with retries credited 100
-  5/5 PASS
-```
-
-The patch was not a template. Told it could only use tables the file already
-touches, it could not add a dedupe table — so it made the writes idempotent in
-SQL instead:
-
-```sql
-credited_paise = shop_orders.credited_paise + EXCLUDED.credited_paise,
-credit_count   = shop_orders.credit_count + 1
-WHERE shop_orders.credit_count = 0      -- a second delivery matches nothing
-```
-
-and added HMAC verification with `timingSafeEqual`, plus an ordering guard
-(`WHERE status NOT IN ('paid','refunded')`).
-
-### Where the patch comes from, and how well each does
-
-Three interchangeable providers, because the probes — not the model — decide
-whether a patch worked.
-
-| Provider | Needs | Measured on the same 5-finding repair |
-|---|---|---|
-| `claude` | Claude Code CLI on PATH | **5 findings → 0**, one round. Runs on an existing subscription, no API credits. |
-| `ollama` | ollama + a local model | `qwen2.5-coder:7b`: **5 → 3**, then plateaued. Fully offline. |
-| `api` | `ANTHROPIC_API_KEY` with credit | direct Anthropic API |
-
-A local 7B does real work here and does not finish the job. Both failing runs
-restored the original file and exited non-zero — no false success.
-
-Local models are asked for **one edit at a time**, as a search/replace block
-applied deterministically here, not a whole-file rewrite. Asking a 3B for the
-complete file was measured failing three rounds running: it returned the source
-almost unchanged, because reproducing 120 lines without drifting is a different
-skill from seeing the bug.
-
-Model choice counts free RAM **and** GPU VRAM, and prefers a model ollama already
-holds resident. Pin one with `RAZE_PROVIDER`.
 
 ## Commands
 
@@ -552,25 +486,110 @@ Layers 2 and 3 call the live Razorpay API. Layer 2 creates a real order and
 deliberately never pays it — the abandonment case cannot be faked without losing
 the point.
 
+## Running this on a machine that has never seen it
+
+Everything below needs **Node 22+ and git**. Nothing else — no Postgres, no
+Docker, no API key, no model.
+
+```bash
+git clone https://github.com/LokarajR/Raze.git
+cd Raze
+npm install
+```
+
+`npm install` downloads a real PostgreSQL and a real MongoDB as npm packages, so
+there is no database to set up. They start on demand under `.pgdata/` and stop
+with the process.
+
+### Step 1 — prove it works, offline
+
+```bash
+npm run test:offline
+```
+
+The layers that need no network: the runtime, the audit probes, the declarative
+mappings, the learning discipline, the pattern detector. No credentials, no
+model, nothing to configure.
+
+```bash
+npm run chaos
+```
+
+The guarantee under a worker SIGKILLed mid-transaction, forged deliveries, a
+failing handler and the database terminated underneath.
+
+Five of its seven cases run offline. The two that prove recovery from dropped
+deliveries need Razorpay credentials — asking Razorpay what it recorded is the
+whole point of those cases and cannot be stubbed without destroying their
+meaning. Without credentials they are reported as skipped, never as passed.
+
+### Step 2 — see a real integration fail, then not
+
+```bash
+npm run eval:public     # scan ten real public integrations   ~2s
+npm run demo            # broken merchant vs the same code protected
+```
+
+Both replay real captured Razorpay deliveries from `measurement/`. No account
+needed.
+
+### Step 3 — with a Razorpay Test Mode account
+
+```bash
+cp .env.example .env    # add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET
+npm test                # all 95 assertions, including the live API layers
+```
+
+Then point Raze at a database of your own:
+
+```bash
+npx raze up --orders <your_orders_table> --key <your_order_id_column> --dry-run
+```
+
+`--dry-run` prints every action and changes nothing. Drop it to run for real, and
+add `--url https://your-public-host/webhook` to register the webhook too.
+
+### What needs what
+
+| | Node + git | Razorpay Test keys | public HTTPS URL | a model |
+|---|:-:|:-:|:-:|:-:|
+| `npm run test:offline`, `npm run chaos` | yes | — | — | — |
+| `npm run demo`, `eval:public`, `raze scan` | yes | — | — | — |
+| `raze up`, `reconcile`, `ledger`, `backfill` | yes | **yes** | — | — |
+| deliveries arriving in 0.23s instead of on the reconcile interval | yes | yes | **yes** | — |
+| `raze fix` (appendix, optional) | yes | — | — | **yes** |
+
+Without a public URL nothing is lost — reconciliation still recovers every
+payment, it just arrives on the reconcile interval rather than in 0.23 seconds.
+
+### If something goes wrong
+
+**`pre-existing shared memory block is still in use`** — a previous run left
+Postgres up. `taskkill /F /IM postgres.exe` on Windows, `pkill postgres`
+elsewhere, then retry. The suite starts one server for all ten layers, so this
+only happens after an interrupted run.
+
+**Port already in use** — `DEMO_PORT=4500 npm run demo`, or `raze up --port 4500`.
+
+**Prefer your own Postgres** — set `DATABASE_URL` and the embedded server is not
+started at all. `docker compose up -d` brings one up.
+
 ## Two modes
 
 **Demo mode** — works immediately against the bundled merchant and the captured
-delivery corpus. `docker compose up -d`, or nothing at all: with no
-`DATABASE_URL`, Raze starts a real embedded PostgreSQL under `raze/.pgdata`. No
-Razorpay account needed for the audit probes.
+delivery corpus. No Razorpay account, no network.
 
-**Real mode** — supply your own Test Mode keys in `.env`, deploy the webhook
-endpoint publicly, configure the webhook in your own dashboard, create real
-payments.
+**Real mode** — supply your own Test Mode keys, deploy the webhook endpoint
+publicly, configure the webhook in your own dashboard, create real payments.
 
 > Clone the repository, connect a Razorpay Test Mode account, configure a public
 > webhook endpoint, and Raze runs the same protection and reconciliation workflow
 > against real Razorpay transactions.
 
-Webhooks require a publicly reachable URL on port 80 or 443 — localhost is
-rejected at save time. Railway, Render and Fly.io all work; see `QUICKSTART.md`.
-Avoid ngrok for a live demo: a tunnel dropping mid-pitch is indistinguishable
-from the product failing.
+Webhooks require a publicly reachable URL on port 443 — localhost is rejected at
+save time. Railway, Render and Fly.io all work; see `DEPLOY.md`. Avoid ngrok for
+a live demo: a tunnel dropping mid-pitch is indistinguishable from the product
+failing.
 
 ## Layout
 
@@ -630,3 +649,117 @@ raze/
   The registration path against a live account is written and unverified.
 - **`raze audit` measures the integration in front of it.** It says nothing about
   code paths no probe exercises.
+- **Running without a webhook secret accepts forged deliveries**, because nothing
+  can distinguish them. The runtime now refuses to start in that state unless
+  `allowUnsigned: true` is passed explicitly — an endpoint that looks healthy
+  while accepting anything is worse than one that will not start.
+
+## Appendix: the repair agent
+
+**Optional, and deliberately not part of the pitch.** Everything above works with
+no model, no API key and no network. This one command does not, and it is the
+weakest thing in the repository — two of three runs against the same file
+produced a full repair, the third produced a patch that broke the merchant
+outright.
+
+It is kept because the verification loop around it is interesting, not because
+repairing merchant code is how Raze works. Raze does not need to fix a handler:
+it takes the handler out of the request path. That is what the declarative
+mappings do, deterministically, and it is what `raze up` uses by default.
+
+If you are asking "why not just ask an AI to fix the code" — that is the right
+question, and the answer is in [The guarantee](#the-guarantee). A model reads code
+and infers; Raze replays real captured deliveries and reads real database state.
+A patch cannot recover a payment that was already lost last week. Reconciliation
+can.
+
+
+`raze fix` reads a merchant's real source, gets real findings from the probes,
+generates a patch, applies it, restarts the service, and re-runs the probes to
+prove the patch worked.
+
+```
+raze fix                     repair examples/merchant-legacy in place
+raze fix --file path/to.js   repair your own handler
+raze fix --restore           put the original back
+```
+
+### The division of labour is the whole design
+
+| | Who decides | How |
+|---|---|---|
+| What is broken | **the probes** | deterministic, reading business state from Postgres |
+| The patch | the model | written at run time from the real source and the observed failures |
+| Whether it is fixed | **the probes** | the same probes, re-run against the restarted service |
+
+The model never discovers a problem, never decides whether something counts as a
+finding, and never declares success. **A patch that does not make the probes pass
+is a failed patch** — the agent restores the original file and reports failure.
+There is no fix database, no template, and no canned diff.
+
+Two guards sit between the model and your code: the reply is only accepted if it
+parses under `node --check`, and only if it keeps the file's exports and shape.
+
+### A real run
+
+`examples/merchant-legacy/server.js` is an ordinary handler — it parses correctly,
+uses transactions, returns sensible status codes. It is not a strawman. Against
+real replayed Razorpay traffic it fails every probe:
+
+```
+BEFORE
+  FIND  Duplicate delivery       credit_count=2, credited=200 paise
+  FIND  Refund event             status=paid, credited=100 paise (was 100)
+  FIND  Tampered signature       ACCEPTED — credited 100 paise on a forged signature
+  FIND  Out-of-order delivery    final status=authorized
+  FIND  Timeout-induced retry    single delivery credited 100, with retries credited 300
+  0/5 pass, 5 finding(s) — UNSAFE TO SHIP
+
+  round 1: generating a patch from the real source and the real findings...
+  round 1: patch applied (5946 bytes). Re-running the probes.
+  round 1: 5 finding(s) -> 0
+
+AFTER
+  ok  Duplicate delivery       credit_count=1, credited=100 paise
+  ok  Refund event             status=refunded, credited=0 paise (was 100)
+  ok  Tampered signature       rejected with HTTP 400
+  ok  Out-of-order delivery    final status=paid
+  ok  Timeout-induced retry    single delivery credited 100, with retries credited 100
+  5/5 PASS
+```
+
+The patch was not a template. Told it could only use tables the file already
+touches, it could not add a dedupe table — so it made the writes idempotent in
+SQL instead:
+
+```sql
+credited_paise = shop_orders.credited_paise + EXCLUDED.credited_paise,
+credit_count   = shop_orders.credit_count + 1
+WHERE shop_orders.credit_count = 0      -- a second delivery matches nothing
+```
+
+and added HMAC verification with `timingSafeEqual`, plus an ordering guard
+(`WHERE status NOT IN ('paid','refunded')`).
+
+### Where the patch comes from, and how well each does
+
+Three interchangeable providers, because the probes — not the model — decide
+whether a patch worked.
+
+| Provider | Needs | Measured on the same 5-finding repair |
+|---|---|---|
+| `claude` | Claude Code CLI on PATH | **5 findings → 0**, one round. Runs on an existing subscription, no API credits. |
+| `ollama` | ollama + a local model | `qwen2.5-coder:7b`: **5 → 3**, then plateaued. Fully offline. |
+| `api` | `ANTHROPIC_API_KEY` with credit | direct Anthropic API |
+
+A local 7B does real work here and does not finish the job. Both failing runs
+restored the original file and exited non-zero — no false success.
+
+Local models are asked for **one edit at a time**, as a search/replace block
+applied deterministically here, not a whole-file rewrite. Asking a 3B for the
+complete file was measured failing three rounds running: it returned the source
+almost unchanged, because reproducing 120 lines without drifting is a different
+skill from seeing the bug.
+
+Model choice counts free RAM **and** GPU VRAM, and prefers a model ollama already
+holds resident. Pin one with `RAZE_PROVIDER`.

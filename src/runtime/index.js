@@ -69,6 +69,24 @@ function create(opts) {
 
   if (!pool) throw new Error('raze.create({ db }) requires a pg Pool');
 
+  // Refuse to run unsigned by accident.
+  //
+  // Without a secret there is nothing to verify a signature against, so every
+  // delivery is accepted — including forged ones from anyone who learns the URL.
+  // That was the default, and it failed silently: an endpoint that looks healthy
+  // while accepting anything is worse than one that will not start. Running
+  // unsigned is still possible, but it has to be asked for.
+  if (!webhookSecret && !opts.allowUnsigned) {
+    throw new Error(
+      'raze.create({ webhookSecret }) is required: without it every delivery is '
+      + 'accepted unverified, including forged ones. Pass allowUnsigned: true only '
+      + 'if you genuinely intend to accept unsigned webhooks.'
+    );
+  }
+  if (!webhookSecret && opts.allowUnsigned) {
+    console.warn('raze: running WITHOUT signature verification — every delivery will be accepted');
+  }
+
   // -------------------------------------------------------------------------
   // Merchant-facing surface
   // -------------------------------------------------------------------------
