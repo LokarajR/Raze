@@ -63,9 +63,31 @@ async function main() {
   signer = signing(env);
   // Downstream code reads the secret off env; keep the two in step.
   env.RAZORPAY_WEBHOOK_SECRET = signer.secret;
-  const { MongoMemoryServer } = require('mongodb-memory-server');
-  const mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri('merchant'));
+  // MongoDB is the one thing in this suite that is not carried by the
+  // repository. mongodb-memory-server downloads a mongod binary from a Mongo
+  // CDN on first use, so on a machine that has never run this — or one behind a
+  // network that will not allow it — this layer cannot run.
+  //
+  // It says so and stops, rather than failing. Everything else in the suite is
+  // genuinely offline, and reporting a missing download as a broken guarantee
+  // would send a reader looking for a bug that is not there. Reporting it as a
+  // pass would be worse.
+  let mongod;
+  try {
+    const { MongoMemoryServer } = require('mongodb-memory-server');
+    mongod = await MongoMemoryServer.create();
+    await mongoose.connect(mongod.getUri('merchant'));
+  } catch (err) {
+    console.log('\nLayer 7 tests  (MongoDB mappings and inference)\n');
+    console.log('  SKIP  MongoDB could not be started — its binary is downloaded on first');
+    console.log('        use and is not part of this repository.');
+    console.log(`        ${String(err.message).split('\n')[0].slice(0, 140)}`);
+    console.log('');
+    console.log('  Everything else in this suite runs with no network. To run this layer,');
+    console.log('  allow the download or point MONGOMS_DOWNLOAD_URL at a mirror.');
+    console.log('');
+    process.exit(0);
+  }
   const db = mongoose.connection.db;
 
   const { pool } = await connect();

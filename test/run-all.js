@@ -1,6 +1,21 @@
 #!/usr/bin/env node
 'use strict';
 
+// The floor is not ours — mongodb-memory-server requires Node 20.19, and the
+// Mongo layer sits in the middle of this suite. Without this check a reader on
+// Node 18 watches six layers pass and then fails on something that has nothing
+// to do with the correctness of their machine.
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+if (nodeMajor < 20 || (nodeMajor === 20 && nodeMinor < 19)) {
+  console.error('');
+  console.error(`  Raze needs Node 20.19 or newer. This is Node ${process.versions.node}.`);
+  console.error('');
+  console.error('  Everything but the MongoDB layer would run on older versions, but');
+  console.error('  mongodb-memory-server does not, and it is part of this suite.');
+  console.error('');
+  process.exit(1);
+}
+
 /**
  * Suite runner.
  *

@@ -11,6 +11,13 @@ code and is asserted to stay that way.
 
 ## 1. Run it with nothing configured — 2 minutes
 
+**Node 20.19 or newer.** Check first — the suite says so and stops if it is
+older, rather than failing six layers in:
+
+```bash
+node --version
+```
+
 ```bash
 git clone https://github.com/LokarajR/Raze.git
 cd Raze
@@ -18,8 +25,14 @@ npm install
 npm run test:offline
 ```
 
-`npm install` pulls a real PostgreSQL and a real MongoDB as npm packages, so
-there is no database to set up.
+`npm install` pulls a real PostgreSQL as an npm package (~108 MB), so there is no
+database to install. MongoDB is different: `mongodb-memory-server` fetches a
+mongod binary from a Mongo CDN the first time it runs. If that download is
+blocked, the MongoDB layer prints `SKIP` and says why — every other layer runs
+with no network at all.
+
+Allow about 400 MB of disk, and a little longer than two minutes on the very
+first run.
 
 Expect **90 assertions across 10 layers, all passing**, on a machine that has
 never seen a credential. Four groups report `SKIP` rather than passing quietly —
