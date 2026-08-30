@@ -76,6 +76,9 @@ async function describeSchema(pool, { maxTables = 12, samples = 3 } = {}) {
     for (const col of columns) {
       const entry = { name: col.name, type: col.type };
       if (/char|text|uuid/i.test(col.type)) {
+        // Distinct values, not just the first few rows: a status column with
+        // 'awaiting_payment' and 'refunded' in it says what this merchant can
+        // express, and subscribing them to events they cannot record is noise.
         try {
           const s = await pool.query(
             `SELECT DISTINCT "${col.name}" AS v FROM "${name}"
@@ -108,9 +111,23 @@ schema has only one money column, there is no "expected" — say null rather tha
 reusing the credited column. Guessing wrong there would make a payment verify
 against a figure the payment itself wrote.
 
+Also decide which Razorpay events this merchant's schema actually needs. Only
+these are possible:
+
+  payment.captured    money settled — always needed
+  payment.authorized  money held but not yet taken
+  payment.failed      only if their status column can express a failed order
+  order.paid          the order as a whole was paid
+  refund.created      only if their status column can express a refunded order
+
+Do not subscribe a merchant to an event their schema cannot record. Judge from
+the status column's existing values and the column names.
+
 Return ONLY a JSON object, no prose, no code fence:
 
 {"table":"...","key":"...","status":"...","credited":"...","expected":"..."|null,
+ "events":["payment.captured", ...],
+ "statusValues":{"paid":"...","failed":"..."|null,"refunded":"..."|null},
  "confidence":"high"|"medium"|"low",
  "reasoning":"one or two sentences a shop owner would understand"}
 
@@ -223,6 +240,16 @@ async function understand(pool) {
   }
 
   const checked = await verify(pool, claim);
+  // An event list is a claim like any other: default to the one event that is
+  // always true rather than trusting whatever came back.
+  const ALLOWED = new Set(['payment.captured', 'payment.authorized', 'payment.failed',
+    'order.paid', 'refund.created']);
+  const events = Array.isArray(claim.events)
+    ? claim.events.filter((e) => ALLOWED.has(e))
+    : [];
+  if (!events.includes('payment.captured')) events.unshift('payment.captured');
+  claim.events = events;
+
   return {
     ok: checked.ok,
     claim,

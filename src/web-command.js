@@ -24,7 +24,11 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
   await migrate(pool);
   await pool.query(MERCHANT_SCHEMA);
 
-  S.publicUrl = process.env.PUBLIC_URL || null;
+  // The CLI reads .env into its own object rather than into process.env, so a
+  // value set there was invisible here — Raze reported having no public address
+  // while one was configured two lines away.
+  S.publicUrl = process.env.PUBLIC_URL || env.RAZE_PUBLIC_URL
+    || process.env.RAZE_PUBLIC_URL || null;
 
   const app = createApp({ pool, databaseUrl: url, env });
   const server = app.listen(port, '0.0.0.0', () => {
@@ -50,8 +54,16 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
     const ready = row && row.backfill_at && row.mapping_confirmed
       && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET;
     if (ready) {
+      // The merchant's orders live in their database, not in Raze's.
+      let merchantPool = pool;
+      if (row.merchant_db) {
+        const { Pool } = require('pg');
+        merchantPool = new Pool({ connectionString: row.merchant_db, max: 4 });
+        merchantPool.on('error', () => {});
+      }
+
       const loops = createLoops({
-        pool,
+        pool: merchantPool,
         razorpay: { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET },
         merchant: {
           mappingConfirmed: true,

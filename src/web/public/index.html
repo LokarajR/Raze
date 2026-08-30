@@ -99,6 +99,11 @@
   table.decided tr:last-child td{border-bottom:none}
   td.mk{color:var(--muted);font-size:12.5px;width:44%}
   td.mv{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+  .chk{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid #16201c}
+  .chk:first-of-type{border-top:none}
+  .chk .m{font-family:var(--mono);flex:none;width:14px}
+  .chk.y .m{color:var(--good)} .chk.n .m{color:var(--risk)}
+  .chk .cd{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}
   .hide{display:none !important}
 </style>
 </head>
@@ -206,6 +211,7 @@ function actionCard(step){
     if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
       e.target.disabled=false; e.target.textContent=step.action; return; }
     settle(c,d);
+    if(d.checklist) checklistCard(d.checklist, d.obligations);
     if(d.backfill) backfillCard(d.backfill);
     advance();
   };
@@ -313,6 +319,22 @@ function integrationCard(code){
     + "it — I apply the same mapping myself — but this is exactly what has been installed on "
     + "your behalf, in your stack's terms."));
   card('<pre>'+esc(code)+'</pre>');
+}
+
+// What Razorpay asks a merchant to do, and what Raze did instead.
+function checklistCard(steps, obligations){
+  card('<div class="lbl">On your Razorpay account</div>'
+    + steps.map(x=>'<div class="chk '+(x.done?'y':'n')+'"><span class="m">'
+      + (x.done?'✓':'—')+'</span><div><div>'+esc(x.what)+'</div>'
+      + (x.detail?'<div class="cd">'+esc(x.detail)+'</div>':'')+'</div></div>').join(''));
+  if(obligations && obligations.length){
+    turn('Raze', md("And the handler they ask you to write on your own server — signature "
+      + "over the raw body, deduplication, out-of-order events, answering inside five "
+      + "seconds. That is the part that usually goes wrong. It is already running."));
+    card('<div class="lbl">In your webhook handler</div>'
+      + obligations.map(o=>'<div class="chk y"><span class="m">✓</span><div><div>'
+        + esc(o.what)+'</div><div class="cd">'+esc(o.detail)+'</div></div></div>').join(''));
+  }
 }
 
 function backfillCard(b){
