@@ -21,8 +21,12 @@ npm run test:offline
 `npm install` pulls a real PostgreSQL and a real MongoDB as npm packages, so
 there is no database to set up.
 
-Expect **110 assertions across 10 layers, all passing**, on a machine that has
-never seen a credential. Two of those layers are the ones to look at first:
+Expect **90 assertions across 10 layers, all passing**, on a machine that has
+never seen a credential. Four groups report `SKIP` rather than passing quietly —
+they need a Razorpay account, and a test that cannot run says so instead of
+counting itself as green. With credentials configured the same suite runs 110.
+
+Two of those layers are the ones to look at first:
 
 ```
 control        the full probe set against a CORRECT integration → zero findings,

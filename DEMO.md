@@ -187,6 +187,42 @@ verdict         provider record and merchant state agree
 
 ---
 
+## 2:40 — The control, said out loud
+
+This is the slide most people skip and the one a good judge is waiting for.
+
+```bash
+node test/control.test.js
+```
+
+```
+PASS  correct:   the full probe set reports ZERO findings
+PASS  protected: the full probe set reports ZERO findings
+PASS  the same probes DO fire on a defective integration
+```
+
+> Every claim I have made about somebody else's integration depends on this. The
+> same five probes, fired at code that is correct, find nothing — and that runs
+> on every build, not just when I am on stage.
+>
+> The last line is the one that matters. A detector that can never fire would
+> also report zero. So the same probes are pointed at the broken merchant and
+> must find something. Zero findings only means anything if the thing is capable
+> of finding.
+
+And the other half of the same argument:
+
+```bash
+node test/deterministic.test.js
+```
+
+> This runs every tool with `claude` unreachable on PATH. The state machine, the
+> seven checks, reconciliation, a recovery plan, and the repair itself all pass
+> with no model present. The conversation is an interface. It is not the
+> dependency.
+
+---
+
 ## 2:50 — Why this is not another payment MCP
 
 > Razorpay ships an MCP. So do Stripe, Square, PayPal and Dwolla. Every one of
@@ -206,9 +242,14 @@ verdict         provider record and merchant state agree
 
 ## Close
 
-> 796 real deliveries measured. Ten public integrations scanned. 77 assertions
-> passing on a machine with no credentials. Two live payments through a deployed
-> endpoint. Nothing in this demo is simulated.
+> 796 real deliveries measured. Ten public integrations scanned. 90 assertions
+> passing on a machine with no credentials and no model, 110 with credentials —
+> and the ones that cannot run without an account say SKIP rather than counting
+> themselves as green. Two live payments
+> through a deployed endpoint, and Razorpay disabled our failing endpoints twice
+> while we built it — with the two that answer correctly surviving both times.
+>
+> Nothing in this demo is simulated.
 
 ---
 
@@ -232,5 +273,7 @@ the repository.
 | 16 deliveries, 22.76h, first retry 0.23s | `measurement/RESULTS.md`, 796 real deliveries |
 | 10 repos, 6 handlers, 3 with defects | `npm run eval:public` |
 | 4 findings unprotected, 5/5 protected | `npm run demo` |
-| 77 assertions | `npm run test:offline` |
+| 90 assertions bare, 110 with credentials | `npm run test:offline` |
 | Live payments | Razorpay dashboard, Test Mode |
+| Zero findings on correct code | `node test/control.test.js`, every build |
+| Runs with no model | `node test/deterministic.test.js`, PATH emptied |
