@@ -98,13 +98,37 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
         crypto.createHash('sha256').update(raw).digest('hex'), orderId]);
 
     const { proposals } = await infer.infer({ pool, corpusPath: logFile });
-    const spec = proposals.find(
+    const found = proposals.find(
       (p) => p.eventType === 'payment.captured' && p.spec.table === ordersTable);
-    if (!spec) return { applied: false, reason: 'no mapping for ' + ordersTable };
+    if (!found) return { applied: false, reason: 'no mapping for ' + ordersTable };
+
+    // Two corrections the merchant's configuration implies but inference cannot
+    // know on its own.
+    const spec = JSON.parse(JSON.stringify(found.spec));
+
+    // 1. Never write the column the amount is checked against.
+    //
+    // Inference sees two integer columns and cannot tell "what this order should
+    // cost" from "what we have credited so far". If it picks the first, every
+    // repair inflates the expected amount — corrupting the exact figure the
+    // policy compares against, so the next check passes for the wrong reason.
+    if (cols.expected && spec.add && spec.add[cols.expected] !== undefined) {
+      delete spec.add[cols.expected];
+      if (cols.amount && cols.amount !== cols.expected) {
+        spec.add[cols.amount] = 'payload.payment.entity.amount';
+      }
+    }
+
+    // 2. A repair never creates an order.
+    //
+    // The policy already refuses a payment with no matching order; the mapping
+    // has to agree, or a drain of unrelated queued events would invent rows for
+    // orders this merchant never had.
+    spec.insertIfMissing = false;
 
     const rz = raze.create({ db: pool, webhookSecret: resolveDemoSecret(process.env).secret });
     const m = mapping.attach(rz, pool);
-    await m.map('payment.captured', spec.spec);
+    await m.map('payment.captured', spec);
     await rz.drain();
     return { applied: true };
   }
