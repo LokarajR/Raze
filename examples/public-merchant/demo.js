@@ -26,6 +26,16 @@ const mongoose = require('mongoose');
 
 const RAZE = path.join(__dirname, '..', '..');
 const { ensureCloned, prepareModuleResolution, startMongo, TARGETS } = require('./run');
+const { resolveDemoSecret } = require('../../src/secret');
+
+// One secret shared by this example's sender and its runtime, so signature
+// verification runs on a machine with no Razorpay account configured.
+const DEMO = resolveDemoSecret(process.env);
+// Their handler reads the secret from the environment, exactly as it would in
+// production. Without one it dies inside crypto and the report would blame
+// their code for our missing configuration, so give it the same demo secret
+// everything else here uses.
+if (!process.env.RAZORPAY_WEBHOOK_SECRET) process.env.RAZORPAY_WEBHOOK_SECRET = DEMO.secret;
 
 const CORPUS = [
   path.join(RAZE, 'measurement', 'deliveries.jsonl'),
@@ -54,7 +64,8 @@ function ladder() {
   return best.map((d) => ({
     body: Buffer.from(d.raw_body_b64, 'base64'),
     eventId: d.event_id,
-    signature: d.signature,
+    signature: require('crypto').createHmac('sha256', DEMO.secret)
+      .update(Buffer.from(d.raw_body_b64, 'base64')).digest('hex'),
     at: d.received_at_iso,
   }));
 }
@@ -133,7 +144,7 @@ async function main() {
   await migrate(pool);
   await pool.query('TRUNCATE raze_inbox, raze_subject_state');
 
-  const rz = raze.create({ db: pool, webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET });
+  const rz = raze.create({ db: pool, webhookSecret: DEMO.secret });
   rz.on('payment.captured', async (event) => {
     await new Promise((resolve) => {
       const req = { body: event, header: () => undefined, headers: {} };

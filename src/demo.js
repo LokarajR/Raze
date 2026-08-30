@@ -19,6 +19,7 @@ const { connect, migrate, shutdown } = require('./db');
 const { createAuditor } = require('./audit');
 const { createReconciler } = require('./reconcile');
 const { createLedger } = require('./ledger');
+const { resolveDemoSecret } = require('./secret');
 
 const RAZE = path.join(__dirname, '..');
 const { MERCHANT_SCHEMA } = require(path.join(RAZE, 'examples', 'demo-merchant', 'server'));
@@ -56,18 +57,24 @@ function render(results) {
 
 module.exports = async function demo({ env, has, LOG }) {
   const port = 4100;
+  // Every merchant here is started by this process; they all share one secret,
+  // so signature verification is exercised whether or not the machine has an
+  // account configured.
+  const { secret, note } = resolveDemoSecret(env);
+  console.log(`
+  ${note}`);
   const { pool, url } = await connect();
   await migrate(pool);
   await pool.query(MERCHANT_SCHEMA);
 
   const auditorFor = (target) => createAuditor({
     targetUrl: `http://127.0.0.1:${port}/webhook`, pool, logFile: LOG,
-    webhookSecret: env.RAZORPAY_WEBHOOK_SECRET,
+    webhookSecret: secret,
   });
 
   // ---- 1. audit the unprotected merchant --------------------------------
   H('raze audit  —  demo-merchant (unprotected)');
-  let child = await startMerchant('broken', url, port, env.RAZORPAY_WEBHOOK_SECRET);
+  let child = await startMerchant('broken', url, port, secret);
   const broken = await auditorFor().run();
   render(broken);
   child.kill(); await sleep(600);
@@ -82,14 +89,14 @@ module.exports = async function demo({ env, has, LOG }) {
 
   // ---- 3. audit again ----------------------------------------------------
   H('raze audit  —  demo-merchant (protected)');
-  child = await startMerchant('protected', url, port, env.RAZORPAY_WEBHOOK_SECRET);
+  child = await startMerchant('protected', url, port, secret);
   const prot = await auditorFor().run();
   render(prot);
   child.kill(); await sleep(600);
 
   // ---- 4. the control ----------------------------------------------------
   H('raze audit --target correct  —  the control');
-  child = await startMerchant('correct', url, port, env.RAZORPAY_WEBHOOK_SECRET);
+  child = await startMerchant('correct', url, port, secret);
   const correct = await auditorFor().run();
   const controlFindings = render(correct);
   child.kill(); await sleep(600);
@@ -103,6 +110,22 @@ module.exports = async function demo({ env, has, LOG }) {
   }
 
   // ---- 5. sever delivery -------------------------------------------------
+  // This step asks Razorpay what it recorded and creates a real order that is
+  // never paid. That is the entire point of it, and there is nothing honest to
+  // substitute, so without credentials it says so and stops rather than failing
+  // partway through with a constraint violation.
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    H('raze demo --sever-delivery');
+    console.log('  Skipped: needs Razorpay Test Mode credentials.\n');
+    console.log('  This step drops every delivery and then recovers the payments by');
+    console.log('  asking Razorpay what it recorded. Querying the real API is the');
+    console.log('  claim being demonstrated, so it cannot be stubbed without');
+    console.log('  destroying its meaning.\n');
+    console.log('  Put RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in raze/.env to run it.\n');
+    await shutdown(pool);
+    return;
+  }
+
   H('raze demo --sever-delivery');
   console.log('  Severing Raze\'s own webhook intake. Razorpay delivery is');
   console.log('  unaffected; we are dropping what arrives.\n');
@@ -141,7 +164,7 @@ module.exports = async function demo({ env, has, LOG }) {
 
   const t0 = Date.now();
   const run = await rec.runOnce();
-  child = await startMerchant('protected', url, port, env.RAZORPAY_WEBHOOK_SECRET);
+  child = await startMerchant('protected', url, port, secret);
   await sleep(2500); // let the protected runtime's worker drain the repairs
   const after = await pool.query('SELECT count(*)::int n FROM shop_orders');
   const secs = ((Date.now() - t0) / 1000).toFixed(0);
