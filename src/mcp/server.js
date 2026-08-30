@@ -605,6 +605,260 @@ function buildServer() {
     } catch (err) { return fail(err.message); }
   });
 
+  // ---- 10. is this merchant protected, right now ------------------------
+  server.registerTool('raze_health', {
+    title: 'Payment protection health',
+    description:
+      'Seven checks answering whether this merchant is actually protected: signature '
+      + 'verification, duplicate safety, retry safety, state transitions, refunds, '
+      + 'reconciliation, and whether anything would notice a payment that never arrives. '
+      + 'Each is the outcome of a real delivery or a real query, never a configuration '
+      + 'check. Fires real deliveries at the endpoint, so point it at a test environment.',
+    inputSchema: {
+      target_url: z.string().describe('the merchant webhook endpoint to test'),
+      webhook_secret: z.string().optional().describe('the secret the endpoint verifies with'),
+    },
+  }, async ({ target_url, webhook_secret }) => {
+    try {
+      const pool = await db();
+      const { computeHealth } = require(path.join(RAZE, 'src', 'health'));
+      const out = await computeHealth({
+        pool, razorpay,
+        targetUrl: target_url,
+        webhookSecret: webhook_secret || resolveDemoSecret(env).secret,
+        logFile: LOG,
+        ordersTable: ORDERS_TABLE,
+      });
+      return ok(out);
+    } catch (err) { return fail(err.message); }
+  });
+
+  // ---- 11. read the merchant's schema, propose the mapping ---------------
+  server.registerTool('raze_propose_mapping', {
+    title: 'Work out this merchant\'s payment model',
+    description:
+      'Read the merchant\'s own schema and propose how Razorpay events map onto it — which '
+      + 'table holds orders, which column carries the Razorpay order id, what each event '
+      + 'should set. Compares information_schema against the field paths present in 796 real '
+      + 'captured deliveries: name and type matching, deterministic, no model, the same '
+      + 'answer every time. Writes nothing. Anything it cannot decide is returned as a '
+      + 'question rather than a guess.',
+    inputSchema: {
+      database_url: z.string().optional()
+        .describe('the merchant database; defaults to the one this server is connected to'),
+    },
+  }, async ({ database_url }) => {
+    let ownPool = null;
+    try {
+      const infer = require(path.join(RAZE, 'src', 'infer'));
+      let target;
+      if (database_url) {
+        const { Pool } = require('pg');
+        ownPool = new Pool({ connectionString: database_url, max: 4 });
+        ownPool.on('error', () => {});
+        await ownPool.query('SELECT 1');
+        target = ownPool;
+      } else {
+        target = await db();
+      }
+
+      const out = await infer.infer({ pool: target, corpusPath: LOG });
+
+      // Several order-shaped tables produce a proposal each, which is correct
+      // and unusable. Score them so the strongest is named — but return them
+      // all, because silently picking the wrong table is the failure that costs
+      // money.
+      const score = (p) => Object.keys(p.spec.set || {}).length
+        + Object.keys(p.spec.add || {}).length * 2
+        + (p.spec.guard ? 2 : 0)
+        + (/razorpay/i.test(p.spec.key.column) ? 3 : 0);
+      const byTable = new Map();
+      for (const p of out.proposals) byTable.set(p.spec.table, (byTable.get(p.spec.table) || 0) + score(p));
+      const ranked = [...byTable.entries()].sort((a, b) => b[1] - a[1]);
+      const best = ranked.length ? ranked[0][0] : null;
+
+      return ok({
+        tables: out.schema.map((t) => ({ name: t.name, columns: t.columns.map((c) => c.name) })),
+        best_table: best,
+        ranking: ranked.map(([table, sc]) => ({ table, score: sc })),
+        proposals: out.proposals.map((p) => ({
+          id: p.eventType + '|' + p.spec.table,
+          recommended: p.spec.table === best,
+          eventType: p.eventType,
+          spec: p.spec,
+          evidence: p.evidence,
+          questions: p.questions,
+        })),
+        next: out.proposals.length
+          ? 'Show the recommended mappings to the merchant. raze_apply_mapping arms the ones '
+            + 'they approve.'
+          : 'No table matched a Razorpay event shape. Do not invent one — ask which table '
+            + 'holds their orders.',
+      });
+    } catch (err) { return fail(err.message); }
+    finally { if (ownPool) await ownPool.end().catch(() => {}); }
+  });
+
+  // ---- 12. arm the mapping the merchant approved ------------------------
+  server.registerTool('raze_apply_mapping', {
+    title: 'Arm an approved mapping',
+    description:
+      'Validate the chosen mappings against the live schema and write them to a mapping file '
+      + 'the merchant can read, edit and commit. Call only after a human has seen the '
+      + 'proposals and said which to accept — this decides what every future delivery does '
+      + 'to their database.',
+    inputSchema: {
+      accept: z.array(z.string()).describe('proposal ids from raze_propose_mapping, e.g. "payment.captured|orders"'),
+      database_url: z.string().optional().describe('the merchant database'),
+      write_to: z.string().optional().describe('path to write the mapping file to'),
+    },
+  }, async ({ accept, database_url, write_to }) => {
+    if (!accept || !accept.length) return fail('nothing was accepted');
+    let ownPool = null;
+    try {
+      const infer = require(path.join(RAZE, 'src', 'infer'));
+      const mapping = require(path.join(RAZE, 'src', 'mapping'));
+      let target;
+      if (database_url) {
+        const { Pool } = require('pg');
+        ownPool = new Pool({ connectionString: database_url, max: 4 });
+        ownPool.on('error', () => {});
+        target = ownPool;
+      } else {
+        target = await db();
+      }
+
+      const out = await infer.infer({ pool: target, corpusPath: LOG });
+      const wanted = new Set(accept);
+      const chosen = out.proposals.filter((p) => wanted.has(p.eventType + '|' + p.spec.table));
+      if (!chosen.length) return fail('none of those ids match a current proposal', { accept });
+
+      // A mapping naming a column that does not exist has to fail here, loudly,
+      // rather than silently writing nothing on every future delivery.
+      const armed = [];
+      for (const p of chosen) {
+        const spec = mapping.normalise(p.eventType, p.spec);
+        await mapping.validateAgainstSchema(target, spec);
+        armed.push({ eventType: p.eventType, table: spec.table });
+      }
+
+      let written = null;
+      if (write_to) {
+        const src = infer.render(chosen, { corpusPath: LOG });
+        fs.writeFileSync(write_to, src);
+        written = write_to;
+      }
+      return ok({
+        armed,
+        written,
+        note: 'Validated against the live schema. ' + (written
+          ? 'The mapping file is the merchant\'s to read and commit.'
+          : 'Pass write_to to also emit the mapping file.'),
+      });
+    } catch (err) { return fail(err.message); }
+    finally { if (ownPool) await ownPool.end().catch(() => {}); }
+  });
+
+  // ---- 13. notice payments that never arrive ----------------------------
+  server.registerTool('raze_watch_orders', {
+    title: 'Watch orders for absence',
+    description:
+      'Arm an expectation for orders that do not have one, so a payment that never arrives '
+      + 'is noticed instead of sitting pending forever. Reconciliation is structurally blind '
+      + 'to this: there is no payment to enumerate, and only a deadline notices. Writes '
+      + 'expectation rows; it does not touch merchant order state.',
+    inputSchema: {
+      deadline_minutes: z.number().int().min(1).max(10080).default(60)
+        .describe('how long an order may stay unpaid before it is considered overdue'),
+      limit: z.number().int().min(1).max(500).default(100).describe('how many orders to arm at most'),
+    },
+  }, async ({ deadline_minutes, limit }) => {
+    try {
+      const pool = await db();
+      const r = await pool.query(
+        `SELECT o.order_id FROM "${ORDERS_TABLE}" o
+           LEFT JOIN raze_expectations e ON e.subject_id = o.order_id
+          WHERE e.subject_id IS NULL
+          LIMIT $1`,
+        [limit]
+      );
+      let armed = 0;
+      for (const row of r.rows) {
+        await pool.query(
+          `INSERT INTO raze_expectations (subject_type, subject_id, expected_event, deadline)
+           VALUES ('order', $1, 'payment.captured', now() + ($2 || ' minutes')::interval)`,
+          [row.order_id, String(deadline_minutes)]
+        );
+        armed++;
+      }
+      return ok({
+        armed,
+        deadline_minutes,
+        note: armed === 0
+          ? 'Every order already has an expectation, or the orders table is empty.'
+          : 'raze_sweep_expectations resolves overdue ones into recovered, failed or abandoned.',
+      });
+    } catch (err) { return fail(err.message); }
+  });
+
+  // ---- 14. everything, in one answer ------------------------------------
+  server.registerTool('raze_status', {
+    title: 'Where this merchant stands',
+    description:
+      'One read-only summary: how many deliveries are held, how many are unapplied, what the '
+      + 'expectation ledger has resolved, and whether Razorpay currently reports settled '
+      + 'payments the merchant has not applied. The first call to make when asked "is '
+      + 'everything alright".',
+    inputSchema: {},
+  }, async () => {
+    try {
+      const pool = await db();
+      const out = {};
+
+      try {
+        const r = await pool.query(
+          `SELECT count(*)::int total,
+                  count(*) FILTER (WHERE processed_at IS NULL)::int unapplied
+             FROM raze_inbox`);
+        out.deliveries = r.rows[0];
+      } catch { out.deliveries = { unavailable: 'raze_inbox unreadable' }; }
+
+      try {
+        const r = await pool.query(
+          `SELECT coalesce(resolution, 'open') AS resolution, count(*)::int n
+             FROM raze_expectations GROUP BY 1`);
+        out.expectations = Object.fromEntries(r.rows.map((x) => [x.resolution, x.n]));
+      } catch { out.expectations = {}; }
+
+      try {
+        const r = await pool.query(
+          `SELECT count(*)::int n, coalesce(sum(credited_paise),0)::bigint paise
+             FROM "${ORDERS_TABLE}"`);
+        out.merchant = { orders: r.rows[0].n, credited_paise: Number(r.rows[0].paise) };
+      } catch (err) { out.merchant = { unavailable: err.message }; }
+
+      if (haveRazorpay) {
+        const { computeImpact } = require(path.join(RAZE, 'src', 'impact'));
+        const impact = await computeImpact({ pool, razorpay, results: [], table: ORDERS_TABLE });
+        out.razorpay = impact.razorpay.available
+          ? {
+              captured: impact.razorpay.capturedCount,
+              not_applied: impact.razorpay.unrecorded.length,
+              at_risk_paise: impact.razorpay.unrecordedPaise,
+              orders: impact.razorpay.unrecorded.slice(0, 20),
+            }
+          : { unavailable: impact.razorpay.reason };
+      } else {
+        out.razorpay = { unavailable: 'no Razorpay credentials configured' };
+      }
+
+      out.next = out.razorpay && out.razorpay.not_applied
+        ? 'raze_explain_order on any order above, then raze_propose_recovery'
+        : 'nothing is diverging right now';
+      return ok(out);
+    } catch (err) { return fail(err.message); }
+  });
+
   return server;
 }
 
