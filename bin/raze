@@ -362,6 +362,8 @@ raze — keeps merchant business state correct when webhook delivery is
                               --target broken|correct|protected starts the demo merchant
                               --json [file] write a machine-readable report
   raze protect                install runtime, arm ledger, start reconciliation
+  raze backfill --from DATE   reconcile history, so installing today does not
+                              leave yesterday invisible. Safe to rerun.
   raze reconcile [--lookback-hours N]
                               run one reconciliation pass now
   raze ledger [--sweep]       show expectations; --sweep classifies overdue ones
@@ -387,6 +389,9 @@ Diagnosis and verification are always deterministic; only repair is generated.
 const commands = {
   gate: cmdGate, init: cmdInit, audit: cmdAudit, reconcile: cmdReconcile, infer: cmdInfer,
   scan: async () => require(path.join(RAZE, 'src', 'scan-command'))({ flag, RAZE }),
+  backfill: async () => require(path.join(RAZE, 'src', 'backfill-command'))({
+    env, flag, has, RAZE, deps: { connect, migrate, shutdown },
+  }),
   setup: async () => require(path.join(RAZE, 'src', 'setup-command'))({
     env, flag, has, LOG, RAZE, deps: { connect, migrate, shutdown },
   }),

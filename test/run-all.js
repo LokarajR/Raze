@@ -31,6 +31,7 @@ const FILES = [
   'layer6.test.js',
   'layer7.test.js',
   'layer8.test.js',
+  'layer9.test.js',
 ];
 
 // Layers 2 and 3 talk to the live Razorpay API; layers 1 and 4 need only the

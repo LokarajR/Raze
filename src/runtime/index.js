@@ -26,6 +26,15 @@ const RETRY_BASE_MS = Number(process.env.RAZE_RETRY_BASE_MS || 250);
 const RETRY_MAX_MS = Number(process.env.RAZE_RETRY_MAX_MS || 60000);
 
 /**
+ * How many failures before an event stops being retried and is escalated.
+ *
+ * Chosen against the measurement rather than picked: Razorpay itself delivers an
+ * event at most 16 times before giving up, so a handler that has failed more
+ * times than the sender would ever try is not going to recover on its own.
+ */
+const MAX_ATTEMPTS = Number(process.env.RAZE_MAX_ATTEMPTS || 16);
+
+/**
  * Event ordering. Razorpay does not guarantee delivery order — their own docs say
  * the expected sequence may not be followed, and the measurement observed
  * payment.authorized, payment.captured and order.paid arriving within
@@ -151,6 +160,7 @@ function create(opts) {
                 headers, signature, source
            FROM raze_inbox
           WHERE processed_at IS NULL
+            AND NOT needs_attention
             AND (next_attempt_at IS NULL OR next_attempt_at <= now())
           ORDER BY received_at
           FOR UPDATE SKIP LOCKED
@@ -239,17 +249,30 @@ function create(opts) {
       }
     }).catch(async (err) => {
       if (!err._razeEventId) throw err;
-      // Exponential backoff, capped. A poison row then costs one attempt per
-      // interval instead of spinning the worker.
-      await pool.query(
+      // Exponential backoff, capped — and a limit. An event that has failed
+      // MAX_ATTEMPTS times is not going to succeed on the next one, and leaving
+      // it retrying forever hides it: the queue looks busy rather than blocked.
+      // It is marked for attention instead. Nothing is deleted and it is never
+      // marked processed, so the raw bytes remain and it can be replayed once
+      // the cause is fixed.
+      const { rows } = await pool.query(
         `UPDATE raze_inbox
             SET process_attempts = process_attempts + 1,
                 last_error = $2,
+                needs_attention = (process_attempts + 1 >= $5),
+                attention_since = CASE WHEN process_attempts + 1 >= $5 THEN now() ELSE attention_since END,
                 next_attempt_at = now() + (LEAST(POWER(2, process_attempts) * $3, $4) || ' milliseconds')::interval
-          WHERE event_id = $1`,
-        [err._razeEventId, String(err.message).slice(0, 500), RETRY_BASE_MS, RETRY_MAX_MS]
+          WHERE event_id = $1
+        RETURNING process_attempts, needs_attention`,
+        [err._razeEventId, String(err.message).slice(0, 500), RETRY_BASE_MS, RETRY_MAX_MS, MAX_ATTEMPTS]
       );
-      return { eventId: err._razeEventId, resolution: 'error', error: err.message };
+      const row = rows[0] || {};
+      return {
+        eventId: err._razeEventId,
+        resolution: row.needs_attention ? 'needs_attention' : 'error',
+        attempts: row.process_attempts,
+        error: err.message,
+      };
     });
   }
 
