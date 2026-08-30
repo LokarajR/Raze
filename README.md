@@ -6,22 +6,45 @@ duplicated, delayed, rejected, or absent.
 It is not a testing tool. It is a correctness layer that sits between Razorpay's
 event delivery and the merchant's business state.
 
+## The guarantee
+
+> **Every payment Razorpay records reaches merchant state exactly once, without
+> depending on webhook delivery. An order is only unpaid if the customer never
+> paid.**
+
+That claim is attacked directly by `npm run chaos`: a worker SIGKILLed
+mid-transaction, a handler failing its first two attempts at every event, forged
+deliveries mixed into the stream, every delivery dropped, and the database
+terminated underneath. Each payment still lands exactly once.
+
+## One command
+
+You have a database and an unfinished webhook story — no handler, a half-written
+one, or a generated one nobody has verified:
+
 ```
-npm install
-npx raze demo --sever-delivery
+npx raze up --orders orders --key razorpay_order_id
 ```
 
-If you have a database and nothing else — no webhook, no handler, no secret:
+That single run migrates, reads your schema and derives the event mappings,
+registers the webhook with Razorpay, arms expectations with a deadline your own
+traffic justifies, backfills history, starts the runtime, reconciliation, ledger
+and outbox — then reports exactly what is covered and what is not.
+
+Here is a real run against a database with two order rows, **no handler, no
+secret and no endpoint**, so nothing was ever delivered by webhook:
 
 ```
-npx raze setup --url https://your-host/webhook   # reads your schema, proposes the
-                                                 # mapping, registers the webhook
-npx raze watch --table orders --key order_id     # notice payments that never arrive
-npx raze protect                                 # run it
+order_TUorOYH8gErbbD   paid       100 paise   recovered by reconciliation
+order_TVCpvdEADkAoMJ   refunded   100 paise   recovered by reconciliation
+order_TVRgqVVfsPAubD   refunded   100 paise   recovered by reconciliation
+order_never_paid_1     pending      0 paise   the customer never paid
 ```
 
-You write no webhook code. `--dry-run` shows every action first and changes
-nothing.
+The only failed order is the one nobody paid for.
+
+Add `--url https://your-host/webhook` to register the endpoint too, and
+`--dry-run` to see every action before anything changes.
 
 ## Three mechanisms
 
@@ -38,20 +61,29 @@ absence.
 
 ## What is guaranteed, precisely
 
-Raze provides **exactly-once business-state transition within Raze's
-transactional boundary**. The dedupe write and the merchant handler's writes
-commit in one Postgres transaction, so a crash between them rolls back both and
-the event is retried cleanly.
+**Exactly-once business-state transition within Raze's transactional boundary.**
+The dedupe write and the handler's writes commit in one Postgres transaction, so
+a crash between them rolls back both and the event is retried cleanly. On
+MongoDB, where no transaction spans both stores, the idempotency guard travels
+inside the update instead — see below.
 
-External side effects — email, shipping APIs, WhatsApp — are **outside** that
-boundary. For those Raze provides an outbox with idempotency keys: at-least-once
-delivery with idempotent execution, not exactly-once execution.
+**Eventual recovery from missed delivery**, subject to the Razorpay API being
+reachable and the state mapping being correct. Reconciliation asks Razorpay what
+it recorded rather than trusting what arrived, so a dropped webhook, a disabled
+endpoint, or an endpoint that never existed all recover the same way.
 
-Recovery from a missed delivery is **eventual, subject to Razorpay API
-availability and a correct state mapping**. The reconciliation gate (§1) verifies
-that mapping before anything else is built.
+**At-least-once with idempotent delivery for external effects.** Email, shipping
+and messaging cannot join a database transaction. They go through an outbox with
+idempotency keys, and that is a weaker promise stated as such.
 
-Every claim here is **proven against five measured failure modes**, listed below.
+Three things stay honest because saying them makes the rest credible:
+
+- **A wrong mapping is executed faithfully.** Raze guarantees your intent, not
+  that your intent is right.
+- **Recovery cannot outrun an unavailable API.** If Razorpay is unreachable,
+  recovery waits. It does not lose.
+- **Nothing here promises there will be no failures.** It promises that a failed
+  delivery is recorded and recoverable rather than acknowledged and lost.
 
 ## Nothing is simulated
 
@@ -262,34 +294,39 @@ holds resident. Pin one with `RAZE_PROVIDER`.
 
 ## Commands
 
-### Getting started
+### Everything at once
 
 ```
-raze setup --url URL        build the integration: read your schema, propose the
-                            mapping, generate a secret, register the webhook with
-                            Razorpay, read it back to confirm. --dry-run first.
-raze infer [--out FILE]     read your schema and propose the mapping, nothing else
-raze init                   run migrations, verify configuration
-raze gate                   run the reconciliation gate and record the outcome
+raze up [--url URL] [--orders TABLE --key COLUMN]
+                            migrate, derive mappings, register the webhook, arm
+                            expectations, backfill history, then run. --dry-run
+                            shows every action and changes nothing.
 ```
 
-### Running
+### Or step by step
 
 ```
+raze setup --url URL        schema, mapping, secret, webhook registration
+raze infer [--out FILE]     read your schema, propose the mapping, nothing else
+raze backfill --from DATE   reconcile history, so installing today does not
+                            leave yesterday invisible. Safe to rerun.
 raze protect                runtime + ledger + reconciliation
 raze watch --table T --key C
-                            arm expectations from your orders table, so a payment
-                            that never arrives is noticed without you writing code
-raze reconcile              one reconciliation pass now
-raze ledger [--sweep]       expectations; --sweep classifies the overdue ones
-raze status                 protection state
+                            arm expectations from your orders table
+raze gate                   run the reconciliation gate, record the outcome
+raze init                   migrations and configuration check
 ```
 
 ### Looking at it
 
 ```
-raze audit [--target ...]   the five probes against real captured deliveries
+raze status                 protection state and reconciliation health
 raze insights               what Raze has learned from your own traffic
+raze audit [--target ...]   five probes against real captured deliveries
+raze scan --file PATH       known defect patterns in a handler, without running
+                            it. Deterministic, offline, no model.
+raze reconcile              one reconciliation pass now
+raze ledger [--sweep]       expectations; --sweep classifies the overdue ones
 raze demo [--sever-delivery]
 raze fix [--file PATH]      repair a handler in place (the only command that
                             generates code; --restore undoes it)
@@ -297,6 +334,21 @@ raze explain <finding>      explanation of a confirmed finding
 ```
 
 **Everything except `fix` and `explain` is deterministic and needs no model.**
+
+## What keeps it true when things break
+
+The mechanisms are only worth what they do under failure, so each is written to
+fail in the direction that can be recovered from.
+
+| | |
+|---|---|
+| A failing event | Retries with exponential backoff, then **stops at 16 attempts** — the number Razorpay itself gives up at — and is marked `needs_attention`. Never deleted, never marked processed, so it can be replayed once the cause is fixed. Retrying forever makes a blocked queue look busy. |
+| Reconciliation | Only a fully covered window advances the watermark. `status` reports *never run*, *never completed*, *stale* or *covered* — **"found nothing" and "never ran" cannot be confused**, which is the more dangerous of the two. |
+| Refunds | Reconciled alongside payments. A merchant who supplies no refund view is told refunds are **unchecked**, never clean. |
+| Drift | Measured against payments actually **applied**, never against an order row existing. An order row is written at checkout before any money moves, so treating existence as knowledge lets every unpaid order mask its own missing payment. |
+| External effects | An outbox with backoff, a delivery cap, and idempotency keys. An effect with no registered sender says so rather than retrying into the ground. |
+| Expectation deadlines | Derived from the p99 of your own fulfilments, and only once there are enough of them. Fifteen minutes is a guess, and a guessed deadline produces false abandonments. |
+| A database blip | The pool logs and reconnects. The process guaranteeing nothing is lost must not die because a connection dropped. |
 
 ## Two ways to write the merchant side
 
@@ -397,41 +449,69 @@ those become incidents.
 ## Proof against code we did not write
 
 ```
-npm run demo:public
+npm run eval:public   scan ten real integrations       ~2s
+npm run live:public   drive two of them with the real ladder
+npm run demo:public   one of them losing a payment, then not
 ```
 
-Clones a real published Razorpay integration at run time, replays the genuine
-16-attempt ladder at it, and reads the result out of that project's own MongoDB.
-Their code is never vendored — those repositories carry no licence, so they are
-fetched like a fixture and nothing from them is committed here.
+Ten public repositories, each written by someone else for their own purpose, none
+aware this project exists. Cloned at run time and never vendored — most carry no
+licence, so their code is fetched like a fixture and none of it is redistributed.
 
 ```
-as published   16 deliveries, all answered 200, nothing written.
-               Model.update() was removed in modern mongoose, so their handler
-               throws, catches its own exception and answers res.send(err) —
-               which Express sends as 200. Razorpay reads that as delivered and
-               stops retrying. The payment is gone and their logs show no failure.
+repositories examined            10
+with a webhook handler            6
+no handler at all                 4
+handler matched >=1 defect        3
 
-behind Raze    the same 16 deliveries deduplicated to one event, the raw bytes
-               stored, the real error surfaced, the event still held and retried.
-               Their handler is just as broken; the payment is recoverable
-               instead of lost.
+3 / 6   no dedupe on the event id, with writes unsafe to repeat
+2 / 6   signature verified over re-serialised JSON
+1 / 6   Model.update(), removed in Mongoose 7
+1 / 6   responses only inside one event-type branch
+1 / 6   request data in a module-level variable
 ```
 
-Four public integrations were audited this way. Every one has a real defect: one
-has no webhook handler at all and relies entirely on the browser callback; one
-depends on a module-level variable that its own code nulls before the webhook can
-use it; one verifies signatures over re-serialised JSON rather than the raw
-bytes; one extends a subscription by 30 days per delivery with no idempotency —
-480 days for a single payment on the measured ladder.
+The four with no webhook handler are their own finding: they verify the browser
+callback and stop, so a customer closing the tab after paying leaves the merchant
+never knowing. No retry handling addresses that — only a deadline does.
 
-None of them was written carelessly. That is the argument for this project.
+### One of them, run live
+
+`neharahman/razorpay-webhook`, unmodified, against the genuine 16-delivery ladder:
+
+```
+as published            16 deliveries, all answered 200, nothing written.
+                        Model.update() was removed in modern mongoose, so their
+                        handler throws, catches its own exception and answers
+                        res.send(err) — which Express sends as 200. Razorpay
+                        reads a success, stops retrying, and the payment is gone
+                        with nothing in their logs to say so.
+
+behind Raze             1 event, handler invoked 3 times with backoff, the real
+                        error surfaced, the event still held. Still lost, though:
+                        holding a broken handler's event is not recording the
+                        payment.
+
+Raze owning execution   handler invoked 0 times, and the payment recorded:
+                        flag=true amount=100 receipt=pay_TUouivTMBk4OY6
+```
+
+The third pass is the point. Their code is not repaired — it is taken out of the
+request path, and the effect is applied by Raze inside its own transaction. The
+mapping was read off their own handler: set amount, receipt, created_at and flag
+on the row keyed by order id, only when flag is not already set. **Their intent
+without their bug.**
+
+A pattern match is a signal about a shape of code, not a verdict on someone
+else's running system, and matching nothing means unrecognised rather than
+correct.
 
 ## Tests
 
 ```
-npm test              59 assertions across seven layers
+npm test              95 assertions across ten layers
 npm run test:offline  the layers that need no network
+npm run chaos         the guarantee under kills, drops and forgeries
 ```
 
 | Layer | Covers |
@@ -441,8 +521,32 @@ npm run test:offline  the layers that need no network
 | 3 | reconciliation: live API, drift detection, idempotent repair |
 | 4 | audit: broken caught, control clean and stable, protected passes |
 | 5 | declarative mappings with no merchant handler |
-| 6 | learning, sample-count discipline, and never breaking a payment |
+| 6 | learning, sample-count discipline, never breaking a payment |
 | 7 | MongoDB mappings and inference |
+| 8 | known defect patterns, and both controls staying clean |
+| 9 | refund reconciliation, escalation, liveness, outbox |
+| 10 | **chaos** |
+
+### The chaos layer
+
+```
+a worker SIGKILLed mid-transaction    every payment applied exactly once
+a handler failing its first 2 tries   6 of 9 calls refused, still exactly once
+forged deliveries in the same stream  all rejected before the handler
+every delivery dropped                reconciliation recovers the payments
+reconciling twice                     nothing double-applied
+the database terminated underneath    the pool reconnects rather than dying
+```
+
+The kills are real. A child worker runs against the real database with a
+deliberately slow write, so the kill lands *inside* a transaction rather than
+between two, and is then SIGKILLed — not asked to stop, not made to throw.
+Throwing exercises the error path; only a kill exercises the crash path, where
+nothing gets to clean up and Postgres rolls back a transaction the process still
+believed was open.
+
+The disorder is seeded and the seed is printed, so any failure reproduces
+exactly: `node test/layer10.test.js <seed>`.
 
 Layers 2 and 3 call the live Razorpay API. Layer 2 creates a real order and
 deliberately never pays it — the abandonment case cannot be faked without losing
@@ -475,14 +579,17 @@ raze/
 ├── bin/raze                    CLI
 ├── src/
 │   ├── runtime/                Layer 1 — protected runtime
-│   ├── reconcile/              Layer 3 — reconciliation daemon
+│   ├── reconcile/              Layer 3 — reconciliation, payments and refunds
 │   ├── ledger/                 Layer 2 — expectation ledger
 │   ├── audit/                  Layer 4 — the five probes
 │   ├── mapping/                declarative mappings, Postgres
 │   ├── mongo/                  declarative mappings and inference, MongoDB
 │   ├── infer/                  read a schema, propose a mapping
+│   ├── patterns/               known defect shapes, recognised without a model
 │   ├── learn/                  observe, then compute over what was observed
+│   ├── outbox/                 effects that cannot join the transaction
 │   ├── agent/                  repair agent: providers, extraction, local models
+│   ├── up-command.js           everything in one run
 │   ├── db.js                   Postgres, embedded or DATABASE_URL
 │   └── demo.js                 scripted demonstration
 ├── migrations/
@@ -491,28 +598,35 @@ raze/
 │   ├── merchant-legacy/        an ordinary handler, the repair agent's target
 │   └── public-merchant/        real published integrations, cloned at run time
 ├── gate/                       the §1 gate and its recorded results
-├── test/                       layer1..layer7, real API and real Postgres
+├── test/                       layer1..layer10, plus the public evaluations
 └── measurement/                the 796-delivery study this is built on
 ```
 
 ## Honest limitations
 
-- **`raze fix` is not reliable.** Three runs against the same file: two full
-  repairs, one patch that broke the merchant outright. It is a demonstration, not
-  a guarantee, and the verifier is what makes it safe to run at all.
-- **A local model does not finish the job.** A 7B fixed two of five defects and
-  stopped. Use the Claude Code CLI provider if you want it completed.
+- **A wrong mapping is executed faithfully.** Raze guarantees your intent, not
+  that your intent is correct. Anything requiring a judgement is emitted as a
+  question rather than decided.
+- **External effects are at-least-once.** Email and shipping cannot join a
+  database transaction. The outbox makes them idempotent, not exactly-once.
+- **Recovery is eventual and bounded by the Razorpay API.** If their API is
+  unreachable, recovery waits. It does not lose.
 - **MongoDB has no shared transaction with the inbox.** The idempotency guard is
-  inside the update instead, which is sound for Raze's own writes but does not
+  inside the update instead, which is sound for Raze's own writes and does not
   extend to yours.
 - **Inference proposes, never applies.** On an unfamiliar schema it proposes
-  nothing rather than guessing — a wrong guess about which row gets marked paid
+  nothing rather than guessing — a wrong guess about which row is marked paid
   moves real money.
+- **`raze scan` recognises only what it knows.** Matching no pattern means
+  unrecognised, not correct. `raze audit` is what tests behaviour.
+- **`raze fix` is not reliable.** Three runs against the same file: two full
+  repairs, one patch that broke the merchant outright. It is a demonstration, and
+  the verifier is what makes it safe to run at all.
+- **A local model does not finish the job.** A 7B fixed two of five defects and
+  stopped. Use the Claude Code CLI provider if you want it completed.
 - **`raze watch` polls.** An order created and paid inside one interval is armed
   late. Calling `rz.expect()` in your own transaction is stronger.
-- **Reconciliation cannot outrun an unavailable API.** A run that could not
-  complete is recorded as failed, never as clean.
+- **`raze setup` and `raze up` have registered a webhook only in `--dry-run`.**
+  The registration path against a live account is written and unverified.
 - **`raze audit` measures the integration in front of it.** It says nothing about
   code paths no probe exercises.
-- **`raze setup` has been exercised in `--dry-run` only.** The webhook
-  registration path is written and unverified against a live account.
