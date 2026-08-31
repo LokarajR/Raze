@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Raze keeps a merchant's order book in agreement with Razorpay. Built on 796 measured webhook deliveries against live infrastructure.">
+<meta property="og:title" content="Raze">
+<meta property="og:description" content="The order says pending. Razorpay has the money. Nothing in either system will ever notice.">
+<meta property="og:type" content="website">
+<title>Raze</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+:root{
+  --ground:#f4f4f0;
+  --panel:#ffffff;
+  --ink:#14171a;
+  --muted:#5c6663;
+  --faint:#8b9491;
+  --hair:#dedbd3;
+  --rule:#c3c0b6;
+  --settled:#0d6b56;
+  --settled-bg:#e3efea;
+  --risk:#96601a;
+  --risk-bg:#f7eedd;
+  --refused:#8f342a;
+  --refused-bg:#f7e8e5;
+  --data-bg:#eceae3;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0c0e0f;
+    --panel:#14181a;
+    --ink:#e9ece9;
+    --muted:#939c99;
+    --faint:#6d7674;
+    --hair:#212729;
+    --rule:#333b3d;
+    --settled:#54d3b1;
+    --settled-bg:#0f2620;
+    --risk:#dda65c;
+    --risk-bg:#241c10;
+    --refused:#e0857a;
+    --refused-bg:#251513;
+    --data-bg:#171c1e;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0c0e0f;
+  --panel:#14181a;
+  --ink:#e9ece9;
+  --muted:#939c99;
+  --faint:#6d7674;
+  --hair:#212729;
+  --rule:#333b3d;
+  --settled:#54d3b1;
+  --settled-bg:#0f2620;
+  --risk:#dda65c;
+  --risk-bg:#241c10;
+  --refused:#e0857a;
+  --refused-bg:#251513;
+  --data-bg:#171c1e;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--ground);color:var(--ink);
+  font:300 18px/1.62 Newsreader,Georgia,serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:760px;margin:0 auto;padding:0 26px}
+.wide{max-width:1000px;margin:0 auto;padding:0 26px}
+
+/* ---------- hero ---------- */
+.hero{padding:86px 0 54px}
+.eyebrow{
+  font:500 11px/1 "IBM Plex Mono",monospace;letter-spacing:.22em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 26px;
+}
+h1{
+  font:700 clamp(40px,7.4vw,74px)/0.98 Archivo,system-ui,sans-serif;
+  letter-spacing:-.035em;margin:0 0 26px;text-wrap:balance;
+}
+h1 em{font-style:normal;color:var(--risk)}
+.lede{font-size:clamp(19px,2.4vw,23px);line-height:1.5;color:var(--muted);max-width:34em;margin:0}
+.lede strong{color:var(--ink);font-weight:400}
+
+/* ---------- the 60-second box ---------- */
+.brief{
+  margin:46px 0 0;background:var(--panel);border:1px solid var(--hair);
+  border-radius:3px;padding:28px 30px;
+}
+.brief h2{
+  font:500 11px/1 "IBM Plex Mono",monospace;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 20px;
+}
+.brief ul{margin:0;padding:0;list-style:none;display:grid;gap:15px}
+.brief li{display:grid;grid-template-columns:26px 1fr;gap:14px;font-size:17px;line-height:1.5}
+.brief li b{
+  font:500 12px/1.5 "IBM Plex Mono",monospace;color:var(--faint);
+}
+
+/* ---------- structure ---------- */
+section{padding:64px 0 0}
+h2.sec{
+  font:700 clamp(26px,3.6vw,36px)/1.1 Archivo,system-ui,sans-serif;
+  letter-spacing:-.02em;margin:0 0 8px;text-wrap:balance;
+}
+.dek{color:var(--muted);font-size:18px;margin:0 0 30px;max-width:34em}
+h3{
+  font:700 17px/1.3 Archivo,system-ui,sans-serif;letter-spacing:-.005em;
+  margin:34px 0 10px;
+}
+p{margin:0 0 17px}
+.rule{height:1px;background:var(--rule);border:0;margin:70px 0 0}
+
+.pull{
+  margin:30px 0;padding:0 0 0 22px;border-left:2px solid var(--risk);
+  font-size:21px;line-height:1.48;color:var(--ink);
+}
+.pull span{color:var(--muted)}
+
+/* ---------- data ---------- */
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+code{
+  font:400 .84em/1.5 "IBM Plex Mono",monospace;background:var(--data-bg);
+  padding:2px 6px;border-radius:2px;
+}
+.scroll{overflow-x:auto;margin:26px 0}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{
+  text-align:left;font:500 10.5px/1.4 "IBM Plex Mono",monospace;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);padding:0 16px 10px 0;
+  border-bottom:1px solid var(--rule);white-space:nowrap;
+}
+td{
+  padding:12px 16px 12px 0;border-bottom:1px solid var(--hair);
+  font-size:15.5px;line-height:1.45;vertical-align:top;
+}
+td:last-child,th:last-child{padding-right:0}
+td.n{font-family:"IBM Plex Mono",monospace;font-size:14px;white-space:nowrap}
+
+/* ---------- the ladder ---------- */
+.ladder{margin:30px 0 0;background:var(--panel);border:1px solid var(--hair);
+  border-radius:3px;padding:26px 26px 20px}
+.ladder .cap{
+  font:500 10.5px/1.5 "IBM Plex Mono",monospace;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);margin:0 0 20px;
+}
+.row{display:grid;grid-template-columns:26px 74px 1fr;gap:12px;align-items:center;
+  padding:3px 0;font-variant-numeric:tabular-nums}
+.row .i{font:400 11px/1 "IBM Plex Mono",monospace;color:var(--faint);text-align:right}
+.row .t{font:500 12.5px/1 "IBM Plex Mono",monospace;color:var(--ink)}
+.bar{height:9px;background:var(--risk);border-radius:1px;opacity:.85}
+.row.first .bar{background:var(--settled)}
+.row.first .t{color:var(--settled)}
+.row.last .bar{background:var(--refused)}
+.row.last .t{color:var(--refused)}
+.dead{display:grid;grid-template-columns:26px 74px 1fr;gap:12px;align-items:center;
+  margin-top:9px;padding-top:12px;border-top:1px dashed var(--rule)}
+.dead .t{font:500 12.5px/1 "IBM Plex Mono",monospace;color:var(--refused)}
+.dead .say{font-size:14px;color:var(--muted)}
+
+/* ---------- refusal grid ---------- */
+.rules{display:grid;gap:1px;background:var(--hair);border:1px solid var(--hair);
+  border-radius:3px;overflow:hidden;margin:26px 0}
+.rules div{background:var(--panel);padding:15px 18px;display:grid;
+  grid-template-columns:1fr auto;gap:10px 18px;align-items:baseline}
+.rules span{font-size:16px}
+.rules b{font:400 12px/1.5 "IBM Plex Mono",monospace;color:var(--refused);white-space:nowrap}
+
+/* ---------- figures ---------- */
+.figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;background:var(--hair);border:1px solid var(--hair);border-radius:3px;
+  overflow:hidden;margin:30px 0}
+.fig{background:var(--panel);padding:20px 18px}
+.fig .v{font:700 27px/1 Archivo,sans-serif;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;display:block;margin-bottom:7px}
+.fig .k{font-size:14px;line-height:1.4;color:var(--muted)}
+.fig.a .v{color:var(--risk)}
+.fig.b .v{color:var(--settled)}
+
+/* ---------- links ---------- */
+.links{display:grid;gap:12px;margin:28px 0 0}
+.links a{
+  display:flex;justify-content:space-between;gap:16px;align-items:baseline;
+  padding:16px 18px;background:var(--panel);border:1px solid var(--hair);
+  border-radius:3px;text-decoration:none;color:var(--ink);
+}
+.links a:hover{border-color:var(--rule)}
+.links .u{font:400 12.5px/1.5 "IBM Plex Mono",monospace;color:var(--muted);
+  word-break:break-all;text-align:right}
+a{color:var(--ink)}
+
+footer{padding:60px 0 90px;color:var(--faint);font-size:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <p class="eyebrow">Razorpay · webhook correctness</p>
+  <h1>The order says pending.<br>Razorpay has <em>the money</em>.</h1>
+  <p class="lede"><strong>Nothing in either system will ever notice.</strong> Raze is the
+    layer that notices — it reads a merchant's database, builds their Razorpay integration,
+    and keeps the two in agreement. The merchant connects a database and supplies keys.
+    Their own code does not change by one character.</p>
+
+  <div class="brief">
+    <h2>The short version</h2>
+    <ul>
+      <li><b>01</b><span>A customer pays and closes the tab. The card is charged. The shop's
+        database says <code>pending</code> forever, because nothing will ever ask again.</span></li>
+      <li><b>02</b><span>We measured why Razorpay's webhooks don't save you: <b>796 real
+        deliveries</b> across four runs against live infrastructure.</span></li>
+      <li><b>03</b><span>Raze builds the integration itself, then reconciles — asking Razorpay
+        what it recorded rather than waiting to be told.</span></li>
+      <li><b>04</b><span>It refuses to write anything it cannot prove, naming the rule every
+        time. That half matters more than the repairs.</span></li>
+    </ul>
+  </div>
+</header>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">The failure is ordinary</h2>
+  <p class="dek">No exotic edge case. The most common integration shape there is.</p>
+
+  <p>A shop creates a Razorpay order, opens Checkout, and marks the order paid when the
+    customer's browser comes back and says the payment succeeded. That is what a first
+    integration looks like — it's the path the quickstart shows, and it works every single
+    time you test it.</p>
+
+  <p>It works because you never close the tab. A customer on a train does. The card is
+    charged, Razorpay has the money, and the shop's order book still says
+    <code>pending</code>. The order isn't shipped. The customer's money is gone.</p>
+
+  <p>Razorpay's answer is webhooks, and their documentation then hands the merchant four
+    hard problems: verify an HMAC over the <em>raw</em> body, deduplicate on
+    <code>x-razorpay-event-id</code>, tolerate events arriving out of order, and answer
+    within five seconds. Most small merchants solve none of them.</p>
+
+  <p class="pull">This repository ships a shop with exactly this bug.
+    <span>Nothing in it is sabotaged. No flag breaks it, no failure is injected, and
+    nothing about Razorpay is simulated — it creates real Test Mode orders against the real
+    API. It's written the ordinary way, and the ordinary way loses money.</span></p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">What we measured</h2>
+  <p class="dek">Razorpay documents "exponential backoff over 24 hours" and never publishes
+    the schedule. So we recorded it.</p>
+
+  <p>Five endpoints behind one public host, each replying differently — 200, 400, 500, an
+    eight-second delay, and a destroyed socket. Real Test Mode payments driven through
+    Checkout. Every delivery below is a genuine HTTP request that arrived from Razorpay's
+    infrastructure carrying a valid signature.</p>
+
+  <div class="figs">
+    <div class="fig"><span class="v">796</span><span class="k">real deliveries, four runs,
+      zero restarts</span></div>
+    <div class="fig a"><span class="v">0.23s</span><span class="k">first retry — a duplicate
+      is certain, not likely</span></div>
+    <div class="fig a"><span class="v">22.76h</span><span class="k">last attempt, then
+      never again</span></div>
+    <div class="fig b"><span class="v">±5s</span><span class="k">agreement between runs a
+      day apart</span></div>
+  </div>
+</section>
+</div>
+
+<div class="wide">
+  <div class="ladder">
+    <p class="cap">One retry ladder — run 1, mode-500, payment.captured · bar length is log
+      of the gap</p>
+
+    <div class="row first"><span class="i">1</span><span class="t">0.23s</span><span class="bar" style="width:4%"></span></div>
+    <div class="row"><span class="i">2</span><span class="t">6.08s</span><span class="bar" style="width:29%"></span></div>
+    <div class="row"><span class="i">3</span><span class="t">19.13s</span><span class="bar" style="width:35%"></span></div>
+    <div class="row"><span class="i">4</span><span class="t">39.55s</span><span class="bar" style="width:39%"></span></div>
+    <div class="row"><span class="i">5</span><span class="t">1.37m</span><span class="bar" style="width:45%"></span></div>
+    <div class="row"><span class="i">6</span><span class="t">2.74m</span><span class="bar" style="width:50%"></span></div>
+    <div class="row"><span class="i">7</span><span class="t">5.43m</span><span class="bar" style="width:56%"></span></div>
+    <div class="row"><span class="i">8</span><span class="t">10.84m</span><span class="bar" style="width:61%"></span></div>
+    <div class="row"><span class="i">9</span><span class="t">21.56m</span><span class="bar" style="width:67%"></span></div>
+    <div class="row"><span class="i">10</span><span class="t">42.94m</span><span class="bar" style="width:72%"></span></div>
+    <div class="row"><span class="i">11</span><span class="t">1.43h</span><span class="bar" style="width:78%"></span></div>
+    <div class="row"><span class="i">12</span><span class="t">2.85h</span><span class="bar" style="width:83%"></span></div>
+    <div class="row"><span class="i">13</span><span class="t">5.70h</span><span class="bar" style="width:89%"></span></div>
+    <div class="row"><span class="i">14</span><span class="t">11.39h</span><span class="bar" style="width:94%"></span></div>
+    <div class="row last"><span class="i">15</span><span class="t">22.76h</span><span class="bar" style="width:100%"></span></div>
+
+    <div class="dead">
+      <span class="i"></span><span class="t">45.5h</span>
+      <span class="say">predicted sixteenth attempt — never arrived, 45 minutes overdue on a
+        schedule that had held to ±5 seconds at every prior step</span>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+<section style="padding-top:40px">
+  <p>Sixteen deliveries. Fourteen doublings, ratio 2.00 from the fifth gap onward. The
+    stopping rule is the 24-hour window, not an attempt count — doubling continues until the
+    next step would fall outside it. Two runs a day apart agreed on the 11.4-hour step to
+    within five seconds, a 0.01% divergence. This schedule is not merely unjittered; it is
+    clocked.</p>
+
+  <h3>Six findings, and the line of code each one forces</h3>
+
+  <div class="scroll"><table>
+    <thead><tr><th style="width:42%">What we measured</th><th>What it forces</th></tr></thead>
+    <tbody>
+      <tr><td>First retry at <b>0.23 seconds</b></td>
+          <td>Answer 200 <em>before</em> processing. A synchronous handler is guaranteed a
+            duplicate, not merely at risk of one.</td></tr>
+      <tr><td><b>Nothing after 22.76 hours</b></td>
+          <td>Waiting is not a recovery strategy. Reconciliation is mandatory.</td></tr>
+      <tr><td>Sustained failure <b>disables the endpoint</b> — observed directly, reproduced
+            twice</td>
+          <td>Delivery never resumes without human action, and the merchant's own system
+            never tells them. A deadline is the only signal left.</td></tr>
+      <tr><td><b>HTTP 400 is retried</b> on the same curve as 500</td>
+          <td>Rejecting a malformed webhook with a 400 earns another ten copies. 4xx is not
+            a stop signal.</td></tr>
+      <tr><td><b>No retry counter in the request</b> — only the event id, signature and user
+            agent</td>
+          <td>A receiver cannot tell attempt 1 from attempt 11. Deduplication <em>must</em>
+            be stateful on the receiver's side. The most product-relevant thing we found,
+            and it is a negative result.</td></tr>
+      <tr><td>Razorpay's <b>list endpoints lag by minutes</b> — found live while building
+            this</td>
+          <td>Reconciliation that only enumerates is blind exactly where a fresh payment
+            lives. Ask about each open order by name instead.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">What we got wrong</h2>
+  <p class="dek">Three published claims, later overturned by more data. Kept, because a
+    research process that only reports its wins isn't one.</p>
+
+  <p><b>We claimed the second retry tier depended on time of day.</b> Runs 2 and 3 differed
+    — 8.6s against 5.9s — and each run's modes clustered tightly enough that noise seemed
+    ruled out. Run 4 refuted it: its within-run spread was <b>1.63s</b>, wider than the
+    between-run gap the entire story rested on. The tight clustering was itself coincidence.
+    The honest number is ~6–9s, with no time dependence.</p>
+
+  <p><b>We claimed one event id identifies one delivery stream.</b> It doesn't — Razorpay
+    assigns one id per event and fans it out to every subscribed endpoint. Our first
+    analyser merged five independent streams into one nonsense sequence.</p>
+
+  <p><b>We claimed one endpoint measured a connection reset.</b> It didn't. The host's edge
+    converted a destroyed origin socket into a 502 before Razorpay ever saw it. The
+    limitation was the instrument, not the finding.</p>
+
+  <p class="pull">Had we built the demo around "Razorpay retries in 200ms" as a universal
+    claim, a refund-based demo would have sat there looking broken for six seconds.
+    <span>The sample, not the instrument, was the limitation — which is the argument for
+    insisting on four runs.</span></p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">What Raze does</h2>
+  <p class="dek">Given a database URL and a Razorpay key pair, and nothing else.</p>
+
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td class="n">01</td><td><b>Reads the schema.</b> Decides which table holds orders,
+        which column carries the Razorpay id, which says whether an order is paid, which
+        money column records what was <em>owed</em>, and which records what
+        <em>arrived</em>.</td></tr>
+      <tr><td class="n">02</td><td><b>Verifies every claim against the live database</b>
+        before believing any of it. Columns must exist, money columns must be numeric, key
+        values must actually look like Razorpay order ids. Anything that fails is
+        dropped.</td></tr>
+      <tr><td class="n">03</td><td><b>Builds the Razorpay side.</b> Generates the signing
+        secret, registers the webhook, subscribes only to events this schema can record,
+        then reads the registration back from Razorpay to confirm it.</td></tr>
+      <tr><td class="n">04</td><td><b>Backfills.</b> Asks Razorpay what it already recorded
+        and reports what the database never applied — a real number, before anything is
+        touched.</td></tr>
+      <tr><td class="n">05</td><td><b>Watches</b> on three independent timers: reconcile
+        every 60s, ask about every open order by name every 20s, sweep deadlines every
+        30s.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>The one judgement it will not guess</h3>
+  <p>One money column records <b>what was owed</b>. Another records <b>what arrived</b>. A
+    payment is applied only after it agrees with the first. Get them backwards and every
+    payment verifies against a figure it wrote itself — worse than no checking at all,
+    because it produces a system that is confidently wrong. Where a schema doesn't clearly
+    distinguish them, Raze reports divergence and never repairs unattended.</p>
+
+  <h3>Where the model sits, and where it does not</h3>
+  <p>A model proposes which column is which. Deterministic code then checks every claim
+    against the live database. A wrong answer cannot arm a wrong mapping — the worst it can
+    do is fail a check and cost the merchant a question. There is also a model-free reader
+    that produces the same claim from the schema alone and passes identical verification.
+    <b>Nothing in the decision path involves a model</b>; one test empties <code>PATH</code>
+    and runs every tool anyway.</p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">What it refuses to write</h2>
+  <p class="dek">Anyone can build something that marks orders paid. The question is what it
+    does when it should not write.</p>
+
+  <div class="rules">
+    <div><span>Razorpay has a payment, no matching order exists</span><b>no-matching-order</b></div>
+    <div><span>The payment is refunded, not captured</span><b>payment-not-captured</b></div>
+    <div><span>The amount disagrees with what the order was owed</span><b>amount-mismatch</b></div>
+    <div><span>The order is already settled</span><b>order-already-paid</b></div>
+    <div><span>The key would touch more than one row</span><b>would-touch-multiple-rows</b></div>
+    <div><span>No column records what was owed</span><b>amount-not-verifiable</b></div>
+    <div><span>The merchant's writes trigger fulfilment</span><b>merchant-has-side-effects</b></div>
+  </div>
+
+  <p>Every rule fails toward escalation. And a repair is not reported as done until Raze has
+    <b>read the row back out of the merchant's own table</b> — an exception not being thrown
+    proves nothing, and a queue accepting a row proves a row exists, not that money landed
+    where the merchant can see it.</p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">Why this isn't a faster integration</h2>
+  <p>Razorpay's own agentic integration makes integration <em>fast</em>: understand the app,
+    generate the integration, get payments working.</p>
+  <p class="pull">Fast integration is not enough. <span>The integration should be hardened
+    against the failure patterns we have actually measured — and the merchant's code should
+    not have to change to get them.</span></p>
+  <p>Two differences follow. Raze generates no code into the merchant's application: the shop
+    in the repository has no webhook handler and has never heard of Raze. And every
+    protection exists because of a specific number in the measurement, not because a style
+    guide recommended it.</p>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2 class="sec">Run it yourself</h2>
+  <p class="dek">The whole demo works on a laptop. No webhook, no public address, no
+    deployment — reconciliation asks Razorpay what it recorded rather than waiting to be
+    told.</p>
+
+  <div class="scroll"><table>
+    <tbody>
+      <tr><td class="n">1</td><td>Start the shop. Tick <b>“customer closes the tab after
+        paying”</b>, place an order, complete the payment.</td></tr>
+      <tr><td class="n">2</td><td>The shop shows <code>pending</code>, ₹0.00 received.
+        Razorpay has the money. Nothing will ever fix this — wait as long as you like.</td></tr>
+      <tr><td class="n">3</td><td>Connect Raze: key id, key secret, database URL. It reads
+        the schema, builds the webhook, and starts watching.</td></tr>
+      <tr><td class="n">4</td><td>Within about twenty seconds the order is <b>paid</b>,
+        received equals billed — written by Raze, verified by reading the row back.</td></tr>
+      <tr><td class="n">5</td><td>Then dismiss a payment window without paying. That order
+        stays pending forever. Raze does not invent a payment.</td></tr>
+    </tbody>
+  </table></div>
+
+  <p><code>npm test</code> runs twelve layers replaying the real captured deliveries.
+    <code>npm run chaos</code> kills a worker mid-transaction, fails a handler's first two
+    attempts at every event, mixes forged deliveries into the stream, drops every delivery,
+    and terminates the database underneath — each payment still lands exactly once. A
+    build-failing control test asserts that a <em>correct</em> integration produces zero
+    findings, so the tooling cannot quietly start reporting problems that aren't there.</p>
+
+  <div class="links">
+    <a href="https://github.com/LokarajR/Raze">
+      <span><b>Source, research and the shop</b></span>
+      <span class="u">github.com/LokarajR/Raze</span>
+    </a>
+  </div>
+</section>
+
+<footer>
+  Built for the Razorpay buildathon. All measurement against Razorpay Test Mode; Raze refuses
+  live keys. The 796-delivery corpus ships in the repository — every test replays it.
+</footer>
+
+</div>
+</body>
+</html>
