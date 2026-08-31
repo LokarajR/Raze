@@ -944,11 +944,41 @@ function buildServer() {
       } catch { out.expectations = {}; }
 
       try {
+        // The configured column, not the demo's name for it. Hardcoding
+        // credited_paise here made every merchant whose column is called
+        // anything else report "unavailable", which then read as UNARMED — a
+        // console claiming to watch nothing while it reconciled every minute.
         const r = await pool.query(
-          `SELECT count(*)::int n, coalesce(sum(credited_paise),0)::bigint paise
+          `SELECT count(*)::int n, coalesce(sum("${AMOUNT_COLUMN}"),0)::bigint paise
              FROM "${ORDERS_TABLE}"`);
         out.merchant = { orders: r.rows[0].n, credited_paise: Number(r.rows[0].paise) };
+
+        // Orders with a gateway id and nothing credited: exactly the set the
+        // targeted poll asks Razorpay about by name. This is what "watching"
+        // means, and a merchant asking "is everything alright" is asking about
+        // these.
+        const open = await pool.query(
+          `SELECT count(*)::int n FROM "${ORDERS_TABLE}"
+            WHERE "${KEY_COLUMN}" IS NOT NULL AND coalesce("${AMOUNT_COLUMN}", 0) = 0`);
+        out.watching = { open_orders: open.rows[0].n };
       } catch (err) { out.merchant = { unavailable: err.message }; }
+
+      // What Raze has done, from its own record rather than from Razorpay's
+      // enumeration. Local, immediate, and the honest answer to "what have you
+      // actually done for me".
+      try {
+        const r = await pool.query(
+          `SELECT kind, count(*)::int n, coalesce(sum(amount_paise),0)::bigint paise
+             FROM raze_actions
+            WHERE at > now() - interval '24 hours'
+            GROUP BY kind`);
+        const by = Object.fromEntries(r.rows.map((x) => [x.kind, x]));
+        out.repairs = {
+          recovered_24h: by.recovered ? by.recovered.n : 0,
+          recovered_paise_24h: by.recovered ? Number(by.recovered.paise) : 0,
+          escalated_24h: by.escalated ? by.escalated.n : 0,
+        };
+      } catch { out.repairs = null; }
 
       if (haveRazorpay) {
         const { computeImpact } = require(path.join(RAZE, 'src', 'impact'));
@@ -988,9 +1018,23 @@ function buildServer() {
         lastAttempt = r.rows[0].any_at;
       } catch { /* table absent: treated as never run */ }
 
+      // "Armed" is whether Raze is watching, and an expectation row is evidence
+      // of that but not the definition of it. A merchant who finished setup
+      // three minutes ago has none yet, and reporting UNARMED — "confirm how
+      // your orders map to payments and I will start checking" — to someone
+      // whose mapping is confirmed and whose loops are running is simply false.
+      //
+      // What actually settles it: a mapping was configured deliberately (all
+      // four column names given, not defaulted) and their order table can be
+      // read with it. That is the same condition under which anything would be
+      // repaired at all.
+      const configured = !!(env.RAZE_ORDERS_TABLE && env.RAZE_ORDER_KEY_COLUMN
+        && env.RAZE_STATUS_COLUMN && env.RAZE_AMOUNT_COLUMN);
       const armed = (() => {
-        try { return out.expectations && Object.keys(out.expectations).length > 0; }
-        catch { return false; }
+        try {
+          if (out.expectations && Object.keys(out.expectations).length > 0) return true;
+          return configured && out.merchant && out.merchant.unavailable === undefined;
+        } catch { return false; }
       })();
 
       const STALE_AFTER_MS = 15 * 60 * 1000;
@@ -1043,8 +1087,30 @@ function buildServer() {
           : 'Nothing has been checked yet, so I cannot vouch for anything.';
       } else {
         state = 'PROTECTED';
-        says = 'Everything is accounted for. Last checked ' + Math.round(ageMs / 1000)
-          + ' seconds ago.';
+        // What Raze has actually done and is actually holding, not what the
+        // enumeration returned.
+        //
+        // This used to say "everything is accounted for" and then quote the
+        // payments list — a list that lags by minutes. A merchant asked whether
+        // things were alright while an order sat unrepaired and was told yes,
+        // with "Razorpay has 0 captured payments" underneath it, at a moment
+        // when Razorpay had several and Raze was about to repair one. The
+        // sentence was true of the list and false about their money.
+        //
+        // The repair record and the open-order count are local, immediate, and
+        // the things a merchant is actually asking about.
+        const bits = [];
+        if (out.repairs && out.repairs.recovered_24h) {
+          bits.push(`${out.repairs.recovered_24h} order(s) repaired in the last 24 hours, `
+            + `Rs ${(out.repairs.recovered_paise_24h / 100).toFixed(2)}`);
+        }
+        if (out.watching && out.watching.open_orders) {
+          bits.push(`${out.watching.open_orders} order(s) still waiting on payment, `
+            + 'each one checked against Razorpay by name every 20 seconds');
+        }
+        says = 'Nothing is unaccounted for right now. '
+          + (bits.length ? bits.join('. ') + '. ' : '')
+          + 'Last checked ' + Math.round(ageMs / 1000) + ' seconds ago.';
       }
 
       out.state = state;

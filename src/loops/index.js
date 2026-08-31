@@ -32,6 +32,9 @@ const actions = require(path.join(RAZE, 'src', 'actions'));
 const DEFAULTS = {
   reconcileMs: 60 * 1000,
   sweepMs: 30 * 1000,
+  // The targeted check. More often than reconciliation because it is one
+  // request per open order and it is the one that catches a fresh payment.
+  pollMs: 20 * 1000,
   overlapMs: 5 * 60 * 1000,
 };
 
@@ -42,6 +45,8 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
   const { createLedger } = require(path.join(RAZE, 'src', 'ledger'));
 
   let reconcileTimer = null;
+  let lastTickAt = null;
+  let pollTimer = null;
   let sweepTimer = null;
   let running = false;
 
@@ -229,6 +234,107 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
     return out;
   }
 
+  /**
+   * Ask about the orders the merchant is actually waiting on.
+   *
+   * Reconciliation enumerates: it asks Razorpay for the payments it has and
+   * compares. That is the right shape for finding drift across an account, and
+   * it has one blind spot that turns out to matter more than any of them —
+   * Razorpay's list endpoints lag. Measured on this account: a payment captured
+   * and confirmed by GET /v1/orders/{id}/payments was still absent from
+   * GET /v1/payments, while the list happily returned records from the previous
+   * day. A merchant watching their own order sees nothing happen for as long as
+   * that lasts, which is precisely the window Raze exists to close.
+   *
+   * So this goes the other way round. It starts from the merchant's unpaid
+   * orders — the rows they are waiting on — and asks Razorpay about each one
+   * directly. Targeted reads do not lag: the payment is there the moment it is
+   * captured.
+   *
+   * It is bounded on purpose. Only orders that carry a gateway id, only the
+   * most recent ones, and each one costs a single request — so this stays a
+   * small, predictable amount of traffic no matter how large the order book is.
+   * Everything it finds goes through the same policy and the same write as any
+   * other route; nothing here is a shortcut past the checks.
+   */
+  async function pollOpenOrders(limit = 25) {
+    const auth = 'Basic ' + Buffer.from(
+      `${razorpay.keyId}:${razorpay.keySecret}`).toString('base64');
+
+    const open = await pool.query(
+      `SELECT "${cols.key}" AS id
+         FROM "${ordersTable}"
+        WHERE "${cols.key}" IS NOT NULL
+          AND coalesce("${cols.amount}", 0) = 0
+        ORDER BY 1 DESC
+        LIMIT ${Number(limit)}`);
+
+    let checked = 0;
+    let found = 0;
+    const seen = [];
+    const outcomes = [];
+    for (const row of open.rows) {
+      checked++;
+      seen.push(row.id);
+      try {
+        // Ask the order, not the list of payments hanging off it.
+        //
+        // Both were tried. The payments sub-resource returned an empty list to
+        // this process for the same order that returned a captured payment to a
+        // freshly started one, minutes apart, on the same credentials — a stale
+        // answer served to a long-lived connection. Whatever the cause, the
+        // order resource is the better question anyway: "has this order been
+        // paid" is a property of the order, and Razorpay answers it with
+        // status and amount_paid.
+        //
+        // No-store is set because this is the one call that must never be
+        // answered from anything but the current state.
+        const ask = (url) => fetch(url, {
+          headers: { authorization: auth, 'cache-control': 'no-cache', pragma: 'no-cache' },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(10000),
+        });
+
+        const r = await ask(`https://api.razorpay.com/v1/orders/${encodeURIComponent(row.id)}`);
+        if (!r.ok) { outcomes.push({ id: row.id, status: r.status }); continue; }
+        const order = await r.json();
+        if (order.status !== 'paid' || !Number(order.amount_paid)) {
+          outcomes.push({ id: row.id, saw: order.status, attempts: order.attempts });
+          continue;
+        }
+
+        // The order says it is paid. Name the payment if Razorpay will say which
+        // one; if it will not, the repair still goes ahead on the order's own
+        // word, labelled so the record shows where the figure came from. What
+        // must never happen is refusing to fix a paid order because a secondary
+        // endpoint was slow.
+        let payment = null;
+        try {
+          const p = await ask(
+            `https://api.razorpay.com/v1/orders/${encodeURIComponent(row.id)}/payments`);
+          if (p.ok) {
+            const body = await p.json();
+            payment = (body.items || []).find((x) => x.status === 'captured') || null;
+          }
+        } catch { /* the order's own word is enough */ }
+
+        found++;
+        const verdict = await handleDrift({
+          id: payment ? payment.id : `orderpaid_${order.id}`,
+          order_id: row.id,
+          amount: payment ? payment.amount : Number(order.amount_paid),
+          status: 'captured',
+        });
+        outcomes.push({ id: row.id, payment: payment ? payment.id : '(named by order)', verdict });
+      } catch (err) {
+        outcomes.push({ id: row.id, error: err.message });
+        onEvent({ type: 'error', where: 'pollOpenOrders', error: err.message });
+      }
+    }
+    onEvent({ type: 'polled', checked, found });
+    return { checked, found, seen, outcomes };
+  }
+
   async function sweepOnce() {
     const ledger = createLedger({ db: pool, razorpay });
     const out = await ledger.sweepOnce();
@@ -255,26 +361,89 @@ function createLoops({ pool, razorpay, config = {}, merchant = {}, columns, orde
       if (running) return;
       running = true;
       await actions.ensure(pool);
+      // Every completed pass stamps the clock. "Running" is a flag this object
+      // sets about itself and will keep reporting long after its work has
+      // stopped happening; the stamp is the only claim that can be checked from
+      // outside, and a console saying "watching your payments" needs to be able
+      // to check it.
+      // Every pass leaves a row, whether or not it found anything.
+      //
+      // Three fixes were made from reading logs and none of them worked, because
+      // the absence of a log line is not evidence — a log tail can be stale, and
+      // an interval that never fires produces exactly the same silence as an
+      // interval whose work found nothing. This makes the difference visible:
+      // a row per tick, in the merchant's own database, with a timestamp.
+      //
+      // If these rows stop appearing between deploys, the loops are dead and
+      // every theory about Razorpay was wrong.
+      await pool.query(`CREATE TABLE IF NOT EXISTS raze_heartbeat (
+        id      BIGSERIAL PRIMARY KEY,
+        at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        kind    TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        ms      INT,
+        detail  TEXT)`).catch(() => {});
+
       const tick = async (fn, where) => {
-        try { await fn(); }
-        catch (err) { onEvent({ type: 'error', where, error: err.message }); }
+        const began = Date.now();
+        let outcome = 'ok';
+        let detail = null;
+        try {
+          const result = await fn();
+          lastTickAt = Date.now();
+          detail = result ? JSON.stringify(result).slice(0, 400) : null;
+        } catch (err) {
+          outcome = 'error';
+          detail = err.message;
+          onEvent({ type: 'error', where, error: err.message });
+        }
+        try {
+          await pool.query(
+            `INSERT INTO raze_heartbeat (kind, outcome, ms, detail) VALUES ($1,$2,$3,$4)`,
+            [where, outcome, Date.now() - began, detail]);
+          // Keep it small; this is a pulse, not an archive.
+          await pool.query(
+            `DELETE FROM raze_heartbeat WHERE at < now() - interval '2 hours'`);
+        } catch { /* a heartbeat that cannot be written is not worth crashing for */ }
       };
       // Run both immediately so a merchant who just finished setup sees a real
       // number rather than waiting a minute for the first tick.
       await tick(reconcileOnce, 'reconcile');
+      await tick(pollOpenOrders, 'poll');
       await tick(sweepOnce, 'sweep');
       reconcileTimer = setInterval(() => tick(reconcileOnce, 'reconcile'), cfg.reconcileMs);
+
+      // On its own timer, deliberately.
+      //
+      // These were chained — reconcile, then poll, on one beat — and the chain
+      // put the fast check behind the slow one. Reconciliation enumerates
+      // Razorpay's payment list; that list is the thing that lags, and while it
+      // was hanging the poll behind it never ran at all. A payment sat captured
+      // and unrepaired while the loop looked perfectly healthy, because the half
+      // that was working kept stamping the clock.
+      //
+      // They answer different questions and neither should be able to stop the
+      // other: one asks Razorpay what it has, the other asks about the orders
+      // this merchant is still waiting on. The second is the one that catches a
+      // payment the list has not caught up with, so it runs more often and
+      // depends on nothing.
+      pollTimer = setInterval(() => tick(pollOpenOrders, 'poll'), cfg.pollMs);
       sweepTimer = setInterval(() => tick(sweepOnce, 'sweep'), cfg.sweepMs);
       onEvent({ type: 'started', reconcileMs: cfg.reconcileMs, sweepMs: cfg.sweepMs });
     },
     stop() {
       if (reconcileTimer) clearInterval(reconcileTimer);
+      if (pollTimer) clearInterval(pollTimer);
       if (sweepTimer) clearInterval(sweepTimer);
-      reconcileTimer = sweepTimer = null;
+      reconcileTimer = pollTimer = sweepTimer = null;
       running = false;
     },
     get running() { return running; },
+    // When a pass last finished, so a caller can tell a loop that is working
+    // from one that merely says it is.
+    get lastTickAt() { return lastTickAt; },
     reconcileOnce,
+    pollOpenOrders,
     sweepOnce,
     handleDrift,
     config: cfg,

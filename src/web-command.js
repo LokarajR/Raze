@@ -16,7 +16,7 @@ const path = require('path');
 
 module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
   const { connect, migrate, shutdown } = deps;
-  const { createApp, stopMerchant, restoreArmed, S, MERCHANT_SCHEMA } =
+  const { createApp, stopMerchant, restoreArmed, S, CONNECT, MERCHANT_SCHEMA } =
     require(path.join(RAZE, 'src', 'web', 'server'));
 
   const port = Number(process.env.PORT || flag('port', 7000));
@@ -73,24 +73,80 @@ module.exports = async function cmdWeb({ env, flag, RAZE, deps }) {
           escalateOnly: !!row.escalate_only || !row.expected_column,
           autoRepair: true,
         },
+        // What setup decided, not what the defaults guess.
+        //
+        // These used to fall straight through to 'order_id' / 'status' /
+        // 'credited_paise' / 'shop_orders', which are this repository's own demo
+        // names. A restart therefore resumed a real merchant against columns
+        // their database does not have, reported "running", and then failed on
+        // every tick — the worst combination available, because the console said
+        // it was watching while nothing could be repaired.
         columns: {
-          key: env.RAZE_ORDER_KEY_COLUMN || 'order_id',
-          status: env.RAZE_STATUS_COLUMN || 'status',
-          amount: env.RAZE_AMOUNT_COLUMN || 'credited_paise',
+          key: row.key_column || env.RAZE_ORDER_KEY_COLUMN || 'order_id',
+          status: row.status_column || env.RAZE_STATUS_COLUMN || 'status',
+          amount: row.credited_column || env.RAZE_AMOUNT_COLUMN || 'credited_paise',
           // The merchant's own answer, never inference. Falling back to the
           // environment only when setup has not recorded one.
           expected: row.expected_column || env.RAZE_EXPECTED_COLUMN || null,
         },
-        ordersTable: env.RAZE_ORDERS_TABLE || 'shop_orders',
+        ordersTable: row.orders_table || env.RAZE_ORDERS_TABLE || 'shop_orders',
+        // The same statement setup built, rebuilt from the same recorded
+        // columns. A restart that omits it leaves the loops able to find drift
+        // and unable to repair any of it.
+        mappingSpec: require(path.join(RAZE, 'src', 'agent', 'build')).mappingSpecFor({
+          table: row.orders_table,
+          key: row.key_column,
+          status: row.status_column,
+          credited: row.credited_column,
+          expected: row.expected_column || null,
+        }),
         logFile: require('fs').existsSync(path.join(RAZE, 'measurement', 'deliveries.jsonl'))
           ? path.join(RAZE, 'measurement', 'deliveries.jsonl') : null,
         onEvent: (e) => {
           if (e.type === 'recovered' || e.type === 'escalated') {
-            console.log(`  ${e.type.padEnd(10)} ${e.orderId}`);
+            // The rule is the whole point of an escalation. Logging the order id
+            // alone says something was refused without saying what refused it.
+            console.log(`  ${e.type.padEnd(10)} ${e.orderId}`
+              + (e.rule ? `  [${e.rule}]` : ''));
+          } else if (e.type === 'error' || e.type === 'reconcile-failed') {
+            // Silence here cost an afternoon: a loop was throwing on every pass
+            // and the only visible symptom was a repair that never arrived.
+            console.log(`  loop-error     ${e.where || ''} ${e.error || ''}`.slice(0, 200));
+          } else if (e.type === 'polled') {
+            console.log(`  polled         ${e.checked} open order(s), ${e.found} captured`);
           }
         },
       });
+      // Everything the live webhook path needs to act on a delivery, put back
+      // where it was before the restart. Without this the console comes up able
+      // to reconcile but unable to verify a signature, so real deliveries would
+      // be recorded and dropped while the minute-by-minute reconciler quietly
+      // did all the work.
+      S.loops = loops;
+      CONNECT.merchantPool = merchantPool;
+      CONNECT.databaseUrl = row.merchant_db || null;
+      CONNECT.razorpay = { keyId: env.RAZORPAY_KEY_ID, keySecret: env.RAZORPAY_KEY_SECRET };
+      CONNECT.webhookSecret = row.webhook_secret || null;
+      CONNECT.chosen = {
+        table: row.orders_table, key: row.key_column, status: row.status_column,
+        credited: row.credited_column, expected: row.expected_column || null,
+      };
+      // Without this the console comes back reconciling a merchant while every
+      // status it displays is read from its own database instead of theirs.
+      const wired = app.locals.writeToolConfig && app.locals.writeToolConfig({
+        databaseUrl: row.merchant_db,
+        creds: CONNECT.razorpay,
+        chosen: CONNECT.chosen,
+      });
+      console.log(wired
+        ? `  tools          reading ${row.orders_table}.${row.credited_column}`
+        : '  tools          NOT rewired — status will read the wrong database');
+
       await loops.start();
+      if (app.locals.armWatchdog) app.locals.armWatchdog();
+      if (!loops.lastTickAt) {
+        console.log('  running        NOT confirmed — no pass completed yet');
+      }
       console.log(`  running        reconcile ${loops.config.reconcileMs / 1000}s, `
         + `sweep ${loops.config.sweepMs / 1000}s
 `);

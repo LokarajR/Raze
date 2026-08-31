@@ -6,6 +6,19 @@ duplicated, delayed, rejected, or absent.
 It is not a testing tool. It is a correctness layer that sits between Razorpay's
 event delivery and the merchant's business state.
 
+> **New here?** Read **[PITCH.md](PITCH.md)** — what the problem is, what we
+> measured against live Razorpay infrastructure, and what Raze does about it.
+> Then **[DEMO.md](DEMO.md)** runs a shop, loses a real payment, and watches Raze
+> find it — entirely on your own machine, no webhook and no deployment needed.
+> **[QUICKSTART.md](QUICKSTART.md)** is the shortest path from clone to a passing
+> suite.
+
+The shop used in the demo lives in **[`storefront/`](storefront/)**. It is a
+normal small integration with a normal bug: it marks an order paid when the
+customer's browser comes back, and nothing else ever asks again. It does not
+import Raze and has no webhook handler. Raze fixes it from the outside without
+that code changing.
+
 ## The guarantee
 
 > **Every payment Razorpay records reaches merchant state exactly once, without

@@ -92,7 +92,7 @@ async function ensure({ onProgress = () => {} } = {}) {
  * stderr, which is easy to miss and the reason an earlier version of this sat
  * waiting for output that had already arrived somewhere else.
  */
-function open(port, { timeoutMs = 60000, onProgress = () => {} } = {}) {
+function open(port, { timeoutMs = 150000, onProgress = () => {} } = {}) {
   return new Promise(async (resolve) => {
     const bin = await ensure({ onProgress });
     if (!bin.ok) return resolve({ ok: false, why: bin.why });
@@ -103,11 +103,54 @@ function open(port, { timeoutMs = 60000, onProgress = () => {} } = {}) {
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let settled = false;
+    // cloudflared prints in several chunks; without this every chunk starts its
+    // own wait against the same address.
+    let waiting = false;
+    let url = null;
+    let registered = false;
     const finish = (out) => { if (!settled) { settled = true; resolve(out); } };
 
+    /**
+     * An address cloudflared has printed is not yet an address that answers.
+     * Razorpay validates the URL when it registers a webhook, and handing it one
+     * before the edge is carrying traffic fails with "no such host" — so this
+     * waits for two things in order.
+     *
+     * The authority is cloudflared's own "Registered tunnel connection" line:
+     * that is the edge saying it will now route to this process. A local HTTP
+     * probe is only a confirmation on top of it, and deliberately not a veto —
+     * this machine's resolver is not the resolver Razorpay uses, and an earlier
+     * version of this threw away perfectly good tunnels because a local lookup
+     * had not caught up. When the probe does not come through, the address is
+     * still returned, marked unverified, and the caller says so.
+     */
+    const wait = async () => {
+      waiting = true;
+      onProgress('waiting for the address to resolve');
+      for (let i = 0; i < 15 && !registered; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (!registered) {
+        child.kill();
+        return finish({ ok: false, why: 'cloudflared never registered a connection' });
+      }
+      for (let i = 0; i < 20; i++) {
+        try {
+          const probe = await fetch(url + '/health');
+          if (probe.ok) return finish({ ok: true, url, verified: true, stop: () => child.kill(), child });
+        } catch { /* not yet */ }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      finish({ ok: true, url, verified: false, stop: () => child.kill(), child });
+    };
+
     const look = (chunk) => {
-      const m = String(chunk).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
-      if (m) finish({ ok: true, url: m[0], stop: () => child.kill(), child });
+      const text = String(chunk);
+      if (/Registered tunnel connection/i.test(text)) registered = true;
+      if (settled) return;
+      const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+      if (m && !url) url = m[0];
+      if (url && !waiting) wait();
     };
     child.stdout.on('data', look);
     child.stderr.on('data', look);

@@ -1,0 +1,16 @@
+{
+  "name": "storefront",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A small shop that takes Razorpay payments the way most shops do, so the failure is real rather than staged",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.10"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

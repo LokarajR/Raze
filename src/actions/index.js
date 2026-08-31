@@ -40,6 +40,30 @@ async function ensure(pool) {
 
 async function record(pool, { kind, orderId, paymentId, amountPaise, rule, why, verifiedState }) {
   await ensure(pool);
+
+  // One open escalation per problem, refreshed rather than repeated.
+  //
+  // Reconciliation runs every minute, and an escalation is by definition
+  // something it cannot resolve on its own — so the same order was recorded
+  // again on every pass. Five orders a merchant needs to look at became
+  // twenty-six rows within half an hour, and the count on their console, which
+  // is supposed to mean "decisions waiting for you", instead measured how long
+  // the process had been running.
+  //
+  // Recovered and swept rows are still appended: those are events that happened
+  // once, and collapsing a history of repairs would lose the audit trail.
+  if (kind === 'escalated' && orderId) {
+    const existing = await pool.query(
+      `UPDATE raze_actions
+          SET at = now(), payment_id = $3, amount_paise = $4, why = $5, verified_state = $6
+        WHERE kind = 'escalated' AND acknowledged = false
+          AND order_id = $1 AND rule = $2
+      RETURNING id, at`,
+      [orderId, rule, paymentId || null, amountPaise || null, why,
+        verifiedState ? JSON.stringify(verifiedState) : null]);
+    if (existing.rowCount) return existing.rows[0];
+  }
+
   const r = await pool.query(
     `INSERT INTO raze_actions (kind, order_id, payment_id, amount_paise, rule, why, verified_state)
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, at`,

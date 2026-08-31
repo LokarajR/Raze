@@ -169,6 +169,107 @@ function askModel(payload, { timeoutMs = 120000 } = {}) {
 }
 
 /**
+ * The same reading, done without a model.
+ *
+ * A server is not a laptop: there is no Claude Code on it, and the first
+ * deployment of this said so in the least useful way available —
+ * "/bin/sh: claude: not found" — and stopped. That is the wrong failure. The
+ * model is how Raze reads an unfamiliar schema quickly; it is not how Raze is
+ * allowed to be correct, because everything it proposes is checked against the
+ * database afterwards either way.
+ *
+ * So this produces the same claim from the schema alone. It is narrower than
+ * the model on purpose. It will not untangle an oddly named schema, and when it
+ * cannot find something it returns nothing rather than a guess — the caller
+ * then reports that it could not read the schema, which is true and safe. What
+ * it does handle is the ordinary case, and the ordinary case is most of them.
+ *
+ * The evidence it uses is what a person would use: a column whose values look
+ * like Razorpay order ids is the key, whatever it is called; a textual column
+ * whose distinct values read like order states is the status; and of the money
+ * columns, the one named for what is owed is expected and the one named for
+ * what arrived is credited. That last distinction is the one that must not be
+ * got wrong, so when the names do not draw it, this declines to.
+ */
+const ORDER_ID = /^order_[A-Za-z0-9]{8,}$/;
+const MONEY = /int|numeric|decimal|double|real|money/i;
+const TEXTISH = /char|text|uuid/i;
+
+function readSchemaWithoutModel(schema) {
+  const scored = [];
+
+  for (const t of schema) {
+    // The key is decided by the values, never by the name. A column called
+    // "reference" holding order_ ids is the key; a column called "order_id"
+    // holding the shop's own numbering is not.
+    const key = t.columns.find((c) => TEXTISH.test(c.type)
+      && (c.examples || []).length && c.examples.every((v) => ORDER_ID.test(v)))
+      // A shop that has not taken an online payment yet has the column and no
+      // values in it, and declining there would mean Raze can only be connected
+      // after the first payment is already at risk. With nothing to read, the
+      // name is the only evidence — so it has to be an unambiguous one, and the
+      // column has to be genuinely empty rather than holding something else.
+      || t.columns.find((c) => TEXTISH.test(c.type)
+        && !(c.examples || []).length
+        && /(gateway|razorpay|rzp|pg)_?(order|payment)?_?(id|ref)/i.test(c.name));
+    if (!key) continue;
+
+    const status = t.columns.find((c) => TEXTISH.test(c.type)
+      && /status|state/i.test(c.name)
+      && !/gateway|payment_id|order_id/i.test(c.name));
+    if (!status) continue;
+
+    const money = t.columns.filter((c) => MONEY.test(c.type)
+      && /amount|total|price|paise|value|sum|due|paid/i.test(c.name)
+      && !/id$/i.test(c.name));
+    const expected = money.find((c) => /due|total|owed|payable|gross|charged/i.test(c.name));
+    const credited = money.find((c) => c !== expected
+      && /paid|settled|received|captured|collected/i.test(c.name))
+      || money.find((c) => c !== expected);
+    if (!credited) continue;
+
+    const values = (status.examples || []).map((v) => v.toLowerCase());
+    const has = (re) => values.find((v) => re.test(v)) || null;
+    const events = ['payment.captured'];
+    if (has(/paid|complete|success/)) events.push('order.paid');
+    if (has(/fail|declin|cancel/)) events.push('payment.failed');
+    if (has(/refund/)) events.push('refund.created');
+
+    scored.push({
+      // More rows is better evidence that this is the order book rather than a
+      // lookup table that happens to carry an order id.
+      weight: (t.rows || 0) + (expected ? 1e6 : 0),
+      claim: {
+        table: t.table,
+        key: key.name,
+        status: status.name,
+        credited: credited.name,
+        expected: expected ? expected.name : null,
+        events,
+        statusValues: {
+          paid: has(/paid|complete|success/) || 'paid',
+          failed: has(/fail|declin|cancel/),
+          refunded: has(/refund/),
+        },
+        confidence: expected ? 'medium' : 'low',
+        source: 'schema',
+        reasoning: `${t.table} is your order table: ${key.name} carries Razorpay order ids, `
+          + `${status.name} says where an order stands, and `
+          + (expected
+            ? `${expected.name} is what was owed while ${credited.name} is what arrived — `
+              + 'so a payment can be checked against a figure it did not write itself.'
+            : `${credited.name} records what arrived. There is no separate column for what `
+              + 'was owed, so nothing here can be repaired unattended.')
+          + ' Read from the schema itself — no model was involved.',
+      },
+    });
+  }
+
+  scored.sort((a, b) => b.weight - a.weight);
+  return scored.length ? scored[0].claim : null;
+}
+
+/**
  * Check every claim against the database before any of it is believed.
  *
  * This is the half that makes a model safe to use here. Each check corresponds
@@ -233,10 +334,16 @@ async function understand(pool) {
   const schema = await describeSchema(pool);
   if (!schema.length) return { ok: false, why: 'this database has no tables' };
 
-  const claim = await askModel({ tables: schema });
-  if (claim.error) return { ok: false, why: claim.error, schema };
-  if (!claim.table) {
-    return { ok: false, why: claim.reasoning || 'no table here holds orders', schema };
+  // The model reads first because it reads better. When it is not there — a
+  // server, an offline machine, a checkout without Claude Code — the schema is
+  // read directly instead, and the result goes through exactly the same
+  // verification. Neither path is trusted; only one of them is faster.
+  let claim = await askModel({ tables: schema });
+  if (claim.error || !claim.table) {
+    const alone = readSchemaWithoutModel(schema);
+    if (alone) claim = alone;
+    else if (claim.error) return { ok: false, why: claim.error, schema };
+    else return { ok: false, why: claim.reasoning || 'no table here holds orders', schema };
   }
 
   const checked = await verify(pool, claim);
@@ -259,4 +366,4 @@ async function understand(pool) {
   };
 }
 
-module.exports = { understand, describeSchema, verify, askModel };
+module.exports = { understand, describeSchema, verify, askModel, readSchemaWithoutModel };

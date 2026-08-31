@@ -6,8 +6,8 @@
 <title>Raze</title>
 <style>
   :root{
-    --ground:#0a0f0d; --panel:#101614; --panel2:#0d1311; --line:#1e2a26;
-    --ink:#dfe7e3; --muted:#7d8f89; --dim:#54635e;
+    --ground:#080c0b; --panel:#0f1513; --panel2:#0c1110; --line:#1c2724;
+    --ink:#e2e9e6; --muted:#7e908a; --dim:#4f5e59;
     --risk:#e0a458; --bad:#e05c4a; --good:#5fbf8f; --cool:#6aa9c9;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -15,95 +15,125 @@
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
-    font-size:14.5px;line-height:1.6;display:flex;flex-direction:column}
-  code{font-family:var(--mono);font-size:.92em;background:var(--panel2);
-    border:1px solid var(--line);border-radius:4px;padding:1px 5px}
-  strong{font-weight:650}
+    font-size:14.5px;line-height:1.6;display:flex;flex-direction:column;overflow-x:hidden}
+  code{font-family:var(--mono);font-size:.9em}
+  @media (prefers-reduced-motion: reduce){*{animation:none !important;transition:none !important}}
 
-  header{flex:none;border-bottom:1px solid var(--line);padding:13px 22px;
-    display:flex;gap:14px;align-items:center}
-  .brand{font-weight:650;letter-spacing:-.01em;font-size:15px}
+  /* a slow drift behind everything, so the page feels alive without moving */
+  body::before{content:'';position:fixed;inset:-40%;z-index:-1;pointer-events:none;
+    background:radial-gradient(closest-side,rgba(45,120,95,.10),transparent 70%);
+    animation:drift 26s ease-in-out infinite alternate}
+  @keyframes drift{from{transform:translate3d(-14%,-8%,0)}to{transform:translate3d(14%,10%,0)}}
+
+  header{flex:none;padding:16px 24px;display:flex;gap:14px;align-items:center;
+    border-bottom:1px solid var(--line)}
+  .brand{font-weight:650;letter-spacing:-.015em;font-size:15.5px}
   .spacer{flex:1}
-  .pill{font-family:var(--mono);font-size:11px;letter-spacing:.05em;padding:4px 11px;
-    border-radius:99px;border:1px solid var(--line);color:var(--muted)}
-  .pill.good{color:var(--good);border-color:#1e3a2e;background:#0d1a14}
+  .pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;padding:4px 11px;
+    border-radius:99px;border:1px solid var(--line);color:var(--muted);transition:.4s}
+  .pill.good{color:var(--good);border-color:#224535;background:#0d1a15}
   .pill.bad{color:var(--bad);border-color:#4a2420;background:#1c0f0d}
   .pill.warn{color:var(--risk);border-color:#4a3a20;background:#1c150d}
 
-  main{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center}
-  .stream{flex:1;width:100%;max-width:780px;overflow-y:auto;padding:26px 22px 8px;
-    display:flex;flex-direction:column;gap:20px}
+  main{flex:1;min-height:0;overflow-y:auto;display:flex;justify-content:center;padding:0 24px}
+  .col{width:100%;max-width:720px;padding:44px 0 60px}
 
-  .turn{display:flex;flex-direction:column;gap:8px}
-  .turn.you{align-items:flex-end}
-  .who{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
-  .said{max-width:68ch}
-  .turn.you .said{background:#16211d;border:1px solid #24332d;border-radius:12px;
-    padding:9px 13px;max-width:80%}
-  .said p{margin:0 0 10px} .said p:last-child{margin-bottom:0}
-  .said ul{margin:8px 0;padding-left:20px}
-  .dots::after{content:'…';animation:blink 1.2s infinite}
-  @keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+  .rise{animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 
-  /* a card is one thing to do, inline in the conversation */
-  .card{border:1px solid var(--line);border-radius:11px;background:var(--panel);
-    padding:15px 16px;max-width:68ch}
-  .card.done{border-color:#1e3a2e;background:#0d1a14}
-  .card .lbl{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;
-    margin-bottom:4px}
-  .field{margin-bottom:11px}
-  .field:last-of-type{margin-bottom:13px}
-  input,select{width:100%;background:var(--panel2);border:1px solid var(--line);
-    color:var(--ink);border-radius:8px;padding:10px 12px;font-family:var(--sans);font-size:14px}
-  input:focus,select:focus{outline:2px solid #24413a;outline-offset:-1px}
-  select{font-family:var(--mono);font-size:13px}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  @media(max-width:560px){.grid2{grid-template-columns:1fr}}
-  button{font-family:inherit;font-size:14px;background:#16211d;border:1px solid #24332d;
-    color:var(--ink);border-radius:8px;padding:10px 16px;cursor:pointer}
-  button:hover{background:#1b2a24}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  button.primary{background:#1d3a30;border-color:#2b5546}
-  button.ghost{background:transparent;border-color:var(--line);color:var(--muted)}
-  .actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
-  .note{font-size:12px;color:var(--dim);margin-top:11px;line-height:1.55}
-  .err{color:var(--bad);font-size:13px;margin-top:10px}
-  .ok{color:var(--good)}
+  h1{font-size:27px;line-height:1.25;letter-spacing:-.02em;margin:0 0 12px;font-weight:600}
+  .sub{color:var(--muted);margin:0 0 30px;max-width:52ch}
 
-  .map{font-family:var(--mono);font-size:12.5px;color:var(--muted);
-    border-left:2px solid #2b5546;padding-left:11px;margin:11px 0}
-  .map b{color:var(--ink);font-weight:500}
+  .field{margin-bottom:13px}
+  .lbl{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+    margin-bottom:6px}
+  input{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+    border-radius:9px;padding:12px 14px;font-family:var(--sans);font-size:14.5px;
+    transition:border-color .2s, box-shadow .2s}
+  input:focus{outline:none;border-color:#2e5a49;box-shadow:0 0 0 3px rgba(45,120,95,.13)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:560px){.two{grid-template-columns:1fr}}
 
-  .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:4px}
-  .fig{border:1px solid var(--line);border-radius:9px;padding:11px 13px;background:var(--panel2)}
-  .fig .k{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
-  .fig .v{font-family:var(--mono);font-size:20px;margin-top:2px}
+  button{font-family:inherit;font-size:14.5px;background:#1a3a2e;border:1px solid #2c5a49;
+    color:var(--ink);border-radius:9px;padding:12px 20px;cursor:pointer;transition:.2s}
+  button:hover:not(:disabled){background:#204739;transform:translateY(-1px)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .go{width:100%;margin-top:8px;font-weight:550}
+  .hint{font-size:12px;color:var(--dim);margin-top:14px;line-height:1.6}
+
+  /* ---- the build ---- */
+  .steps{display:flex;flex-direction:column;margin-top:6px}
+  .step{display:flex;gap:14px;padding:15px 0;border-top:1px solid var(--line);
+    opacity:.32;transition:opacity .45s}
+  .step:first-child{border-top:none}
+  .step.live,.step.done,.step.failed,.step.skipped{opacity:1}
+  .dot{flex:none;width:19px;height:19px;border-radius:50%;margin-top:2px;position:relative;
+    border:1.5px solid var(--line);transition:.35s}
+  .step.live .dot{border-color:#2c5a49}
+  .step.live .dot::after{content:'';position:absolute;inset:3px;border-radius:50%;
+    background:var(--good);animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.25;transform:scale(.7)}50%{opacity:1;transform:scale(1)}}
+  .step.done .dot{border-color:#2c5a49;background:#12291f}
+  .step.done .dot::after{content:'✓';position:absolute;inset:0;display:grid;place-items:center;
+    color:var(--good);font-size:11px;font-family:var(--mono)}
+  .step.failed .dot{border-color:#4a2420;background:#1c0f0d}
+  .step.failed .dot::after{content:'!';position:absolute;inset:0;display:grid;place-items:center;
+    color:var(--bad);font-size:11px;font-family:var(--mono)}
+  .step.skipped .dot::after{content:'–';position:absolute;inset:0;display:grid;place-items:center;
+    color:var(--dim);font-size:11px;font-family:var(--mono)}
+  .st{flex:1;min-width:0}
+  .sn{font-size:14px;font-weight:500}
+  .sd{font-size:12.5px;color:var(--muted);margin-top:3px;line-height:1.55;
+    animation:fade .4s both}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .step.failed .sd{color:var(--bad)}
+
+  .panel{margin-top:11px;border:1px solid var(--line);border-radius:9px;background:var(--panel);
+    padding:12px 14px;animation:rise .45s both}
+  .panel .ph{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+    margin-bottom:9px}
+  table.map{width:100%;border-collapse:collapse}
+  table.map td{padding:5px 0;font-size:12.5px;border-bottom:1px solid #16201c}
+  table.map tr:last-child td{border-bottom:none}
+  td.k{color:var(--muted);width:46%}
+  td.v{font-family:var(--mono);color:var(--ink)}
+  .chk{display:flex;gap:9px;padding:6px 0;font-size:12.5px}
+  .chk .m{font-family:var(--mono);color:var(--good);flex:none}
+  .chk.n .m{color:var(--risk)}
+  .chk .cd{color:var(--muted);font-size:11.5px;margin-top:2px}
+  pre{margin:0;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    padding:12px;overflow:auto;max-height:230px;font-family:var(--mono);font-size:11px;
+    color:var(--muted);line-height:1.5}
+
+  .figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:11px;
+    margin-top:22px}
+  .fig{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--panel);
+    animation:rise .5s both}
+  .fig .k{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+  .fig .v{font-family:var(--mono);font-size:23px;margin-top:4px;font-variant-numeric:tabular-nums}
   .fig.good .v{color:var(--good)} .fig.risk .v{color:var(--risk)}
 
-  pre{margin:11px 0 0;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
-    padding:12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;color:var(--muted);
-    max-height:280px;line-height:1.5}
-
-  .composer{flex:none;width:100%;max-width:780px;padding:10px 22px 18px}
+  .ask{margin-top:34px;border-top:1px solid var(--line);padding-top:20px}
   .cbox{display:flex;gap:9px;align-items:center;background:var(--panel);
-    border:1px solid var(--line);border-radius:12px;padding:7px 8px 7px 14px}
-  .cbox input{border:none;background:transparent;padding:6px 0}
-  .cbox input:focus{outline:none}
-  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+    border:1px solid var(--line);border-radius:11px;padding:6px 6px 6px 14px}
+  .cbox input{border:none;background:transparent;padding:7px 0}
+  .cbox input:focus{box-shadow:none}
+  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}
   .chip{background:var(--panel2);border:1px solid var(--line);color:var(--muted);
-    border-radius:99px;padding:5px 12px;font-size:12.5px;cursor:pointer}
-  .chip:hover{color:var(--ink);border-color:#2b5546}
-  .disclaim{font-size:11.5px;color:var(--dim);margin-top:9px;text-align:center}
-  table.decided{width:100%;border-collapse:collapse;margin-bottom:13px}
-  table.decided td{padding:7px 0;border-bottom:1px solid #16201c;vertical-align:top}
-  table.decided tr:last-child td{border-bottom:none}
-  td.mk{color:var(--muted);font-size:12.5px;width:44%}
-  td.mv{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
-  .chk{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid #16201c}
-  .chk:first-of-type{border-top:none}
-  .chk .m{font-family:var(--mono);flex:none;width:14px}
-  .chk.y .m{color:var(--good)} .chk.n .m{color:var(--risk)}
-  .chk .cd{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}
+    border-radius:99px;padding:5px 12px;font-size:12.5px;cursor:pointer;transition:.2s}
+  .chip:hover{color:var(--ink);border-color:#2c5a49}
+  .msg{margin-top:16px;animation:rise .4s both}
+  .msg .who{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+    margin-bottom:5px}
+  .msg p{margin:0 0 9px} .msg p:last-child{margin-bottom:0}
+  .dots::after{content:'…';animation:blink 1.2s infinite}
+  @keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+  .disclaim{font-size:11.5px;color:var(--dim);margin-top:11px}
+  .again{margin-left:10px;padding:0;border:0;background:none;color:var(--dim);
+    font:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+  .again:hover{color:var(--fg)}
+  .again:disabled{cursor:default;text-decoration:none}
+  .err{color:var(--bad);font-size:13px;margin-top:10px}
   .hide{display:none !important}
 </style>
 </head>
@@ -112,291 +142,286 @@
 <header>
   <div class="brand">Raze</div>
   <div class="spacer"></div>
-  <div class="pill" id="pill">…</div>
+  <div class="pill" id="pill">not connected</div>
 </header>
 
 <main>
-  <div class="stream" id="stream"></div>
-  <div class="composer">
-    <div class="cbox">
-      <input id="ask" placeholder="Ask about your payments…" autocomplete="off">
-      <button class="primary" id="send">Send</button>
-    </div>
-    <div class="chips" id="chips"></div>
-    <div class="disclaim">Raze reads your database and Razorpay directly. The states and
-      amounts are not generated by a model.</div>
+  <div class="col">
+
+    <section id="intro" class="rise">
+      <h1>Connect your store. I'll do the rest.</h1>
+      <p class="sub">Give me your Razorpay keys and your database. I work out how your
+        orders relate to payments, build the integration on Razorpay for you, and watch it
+        from then on. I won't ask you anything else.</p>
+
+      <div class="two">
+        <div class="field">
+          <div class="lbl">Razorpay key id</div>
+          <input id="keyId" placeholder="rzp_test_…" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <div class="lbl">Key secret</div>
+          <input id="keySecret" type="password" placeholder="••••••••" autocomplete="off">
+        </div>
+      </div>
+      <div class="field">
+        <div class="lbl">Your database</div>
+        <input id="dbUrl" type="password" placeholder="postgres://user:pass@host:5432/dbname"
+               autocomplete="off">
+      </div>
+      <button class="go" id="go">Set up my payments</button>
+      <div class="hint">Test Mode keys only. Nothing is written to disk — the keys live in
+        this process and are never logged or returned.</div>
+      <div id="introErr"></div>
+    </section>
+
+    <section id="build" class="hide">
+      <h1 id="buildTitle">Setting up</h1>
+      <p class="sub" id="buildSub">This takes about a minute.</p>
+      <div class="steps" id="steps"></div>
+      <div id="figs"></div>
+    </section>
+
+    <section id="ask" class="ask hide">
+      <div class="cbox">
+        <input id="q" placeholder="Ask about your payments…" autocomplete="off">
+        <button id="send">Ask</button>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="disclaim">The states and amounts are read from your database and Razorpay.
+        They are not generated by a model.
+        <button id="again" class="again">Connect a different store</button></div>
+      <div id="thread"></div>
+    </section>
+
   </div>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-const rupees = (p) => '₹' + (Math.round(Number(p)||0)/100).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
-const post = async (u,b) => (await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b||{})})).json();
-const get  = async (u) => (await fetch(u)).json();
+const esc = (s) => String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const rupees = (p) => '₹' + (Math.round(Number(p)||0)/100).toLocaleString('en-IN',
+  {minimumFractionDigits:2,maximumFractionDigits:2});
+// A deployment that guards setup wants a token. Taken from ?t= once and kept,
+// so the address stops carrying a secret after the first load.
+const TOKEN = (() => {
+  const u = new URL(location.href);
+  const t = u.searchParams.get('t');
+  if (t) {
+    try { localStorage.setItem('raze.token', t); } catch {}
+    u.searchParams.delete('t');
+    history.replaceState(null, '', u.pathname + u.search + u.hash);
+    return t;
+  }
+  try { return localStorage.getItem('raze.token') || ''; } catch { return ''; }
+})();
+const post = async (u,b) => (await fetch(u,{method:'POST',
+  headers:{'content-type':'application/json', ...(TOKEN?{'x-raze-setup':TOKEN}:{})},
+  body:JSON.stringify(b||{})})).json();
 
 function md(t){
-  return esc(t).split(/\n{2,}/).map(b=>{
-    const lines=b.split('\n');
-    if(lines.every(l=>/^\s*[-*]\s+/.test(l)))
-      return '<ul>'+lines.map(l=>'<li>'+inline(l.replace(/^\s*[-*]\s+/,''))+'</li>').join('')+'</ul>';
-    return '<p>'+lines.map(inline).join('<br>')+'</p>';
-  }).join('');
+  return esc(t).split(/\n{2,}/).map(b=>'<p>'+b.split('\n').map(inline).join('<br>')+'</p>').join('');
 }
 const inline = (s) => s
   .replace(/`([^`]+)`/g,'<code>$1</code>')
-  .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-  .replace(/\b(order_[A-Za-z0-9]+)\b/g,'<code>$1</code>');
+  .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
 
-function turn(who, html, cls){
-  const el=document.createElement('div');
-  el.className='turn '+(cls||who.toLowerCase());
-  el.innerHTML='<div class="who">'+esc(who)+'</div><div class="said">'+html+'</div>';
-  $('stream').appendChild(el);
-  el.scrollIntoView({behavior:'smooth',block:'end'});
-  return el;
-}
-const card = (html) => { const el=turn('Raze','<div class="card">'+html+'</div>'); return el.querySelector('.card'); };
+// The steps Raze walks. Named for what the merchant gets, not what runs.
+const STEPS = [
+  ['keys',     'Your Razorpay account'],
+  ['db',       'Your database'],
+  ['schema',   'Working out your payment model'],
+  ['address',  'An address Razorpay can reach'],
+  ['webhook',  'Building the integration on Razorpay'],
+  ['mapping',  'Arming it against your schema'],
+  ['backfill', 'Checking what Razorpay already has'],
+  ['watch',    'Watching from now on'],
+];
 
-// ---- the setup conversation ------------------------------------------------
-let picked = {};
-
-async function advance(){
-  const {step,state} = await get('/api/ray/next');
-  if(step.id==='done'){ await running(state); return; }
-  if(step.say) turn('Raze', md(step.say));
-
-  if(step.id==='mapping') return mappingCard(step);
-  if(step.fields)  return fieldsCard(step);
-  if(step.choices) return choicesCard(step);
-  if(step.action)  return actionCard(step);
+function renderSteps(){
+  $('steps').innerHTML = STEPS.map(([id,name]) =>
+    '<div class="step" id="s_'+id+'"><div class="dot"></div><div class="st">'
+    + '<div class="sn">'+esc(name)+'</div><div class="sd" id="d_'+id+'"></div>'
+    + '<div id="x_'+id+'"></div></div></div>').join('');
 }
 
-function fieldsCard(step){
-  const c=card(
-    step.fields.map(f=>'<div class="field"><div class="lbl">'+esc(f.label)+'</div>'
-      + '<input id="f_'+f.name+'" type="'+(f.type||'text')+'" placeholder="'+esc(f.placeholder||'')+'"></div>').join('')
-    + '<div class="actions"><button class="primary" id="go">'+esc(step.action)+'</button></div>'
-    + (step.note?'<div class="note">'+esc(step.note)+'</div>':'')
-    + '<div id="e"></div>');
-  c.querySelector('#go').onclick = async (e)=>{
-    e.target.disabled=true; e.target.textContent='Checking…';
-    const values={}; step.fields.forEach(f=>values[f.name]=c.querySelector('#f_'+f.name).value);
-    const d=await post('/api/ray/act',{step:step.id,values});
-    if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
-      e.target.disabled=false; e.target.textContent=step.action; return; }
-    settle(c,d); advance();
-  };
+function setStep(id, status, detail){
+  const el = $('s_'+id);
+  if(!el) return;
+  el.className = 'step ' + status;
+  if(detail) $('d_'+id).textContent = detail;
+  if(status==='live') el.scrollIntoView({behavior:'smooth',block:'center'});
 }
 
-function choicesCard(step){
-  const c=card('<div class="actions">'
-    + step.choices.map(ch=>'<button data-v="'+esc(ch.value)+'">'+esc(ch.label)+'</button>').join('')
-    + '</div>' + (step.note?'<div class="note">'+esc(step.note)+'</div>':''));
-  c.querySelectorAll('[data-v]').forEach(b=>{
-    b.onclick=async()=>{
-      c.querySelectorAll('button').forEach(x=>x.disabled=true);
-      const d=await post('/api/ray/act',{step:step.id,values:{choice:b.dataset.v}});
-      settle(c,d); advance();
-    };
+function extra(id, html){
+  const host = $('x_'+id);
+  if(host) host.innerHTML = html;
+}
+
+// ---- the build stream ------------------------------------------------------
+const es = new EventSource('/api/events');
+es.onmessage = (m) => {
+  const e = JSON.parse(m.data);
+  if(e.type === 'build') onBuild(e);
+  if(e.type === 'loop')  onLoop(e);
+};
+
+function onBuild(e){
+  if(e.id === 'finished'){ finish(); return; }
+  if(e.id === 'error'){ setStep('keys','failed', e.detail); return; }
+  setStep(e.id, e.status === 'working' ? 'live' : e.status, e.detail);
+
+  if(e.mapping){
+    const m = e.mapping;
+    const row = (k,v)=>'<tr><td class="k">'+esc(k)+'</td><td class="v">'+esc(v||'—')+'</td></tr>';
+    extra('schema','<div class="panel"><div class="ph">what I found</div><table class="map">'
+      + row('orders live in', m.table) + row('Razorpay order id', m.key)
+      + row('paid status', m.status) + row('money credited to', m.credited)
+      + row('what it should cost', m.expected) + '</table></div>');
+  }
+  if(e.checklist){
+    extra('webhook','<div class="panel"><div class="ph">what Razorpay asks a merchant to do</div>'
+      + e.checklist.map(x=>'<div class="chk '+(x.done?'':'n')+'"><span class="m">'
+        + (x.done?'✓':'—')+'</span><div>'+esc(x.what)
+        + (x.detail?'<div class="cd">'+esc(x.detail)+'</div>':'')+'</div></div>').join('')
+      + (e.obligations?'<div class="ph" style="margin-top:13px">and in the handler, already running</div>'
+        + e.obligations.map(o=>'<div class="chk"><span class="m">✓</span><div>'+esc(o.what)
+          + '<div class="cd">'+esc(o.detail)+'</div></div></div>').join(''):'')
+      + '</div>');
+  }
+  if(e.integration){
+    extra('mapping','<div class="panel"><div class="ph">your integration, as code you own</div>'
+      + '<pre>'+esc(e.integration)+'</pre></div>');
+  }
+  if(e.figures){
+    const f = e.figures;
+    $('figs').innerHTML = '<div class="figs">'
+      + fig('Settled at Razorpay', f.checked, '')
+      + fig('Not in your database', f.missing, f.missing?'risk':'good')
+      + (f.missing ? fig('At risk', rupees(f.paise), 'risk') : '')
+      + '</div>';
+    countUp();
+  }
+}
+const fig = (k,v,cls) => '<div class="fig '+(cls||'')+'"><div class="k">'+esc(k)
+  + '</div><div class="v">'+esc(v)+'</div></div>';
+
+// Numbers land rather than appear.
+function countUp(){
+  document.querySelectorAll('.fig .v').forEach(el=>{
+    const raw = el.textContent;
+    const num = Number(String(raw).replace(/[^\d.]/g,''));
+    if(!isFinite(num) || num === 0) return;
+    const pre = raw.startsWith('₹') ? '₹' : '';
+    let i = 0;
+    const steps = 22;
+    const tick = setInterval(()=>{
+      i++;
+      const v = Math.round(num * (i/steps));
+      el.textContent = pre + (pre ? v.toLocaleString('en-IN') : v);
+      if(i>=steps){ clearInterval(tick); el.textContent = raw; }
+    }, 22);
   });
 }
 
-function actionCard(step){
-  const c=card('<div class="actions"><button class="primary" id="go">'+esc(step.action)+'</button></div>'
-    + (step.note?'<div class="note">'+esc(step.note)+'</div>':'')+'<div id="e"></div>');
-  c.querySelector('#go').onclick=async(e)=>{
-    e.target.disabled=true; e.target.textContent='Working…';
-    const d=await post('/api/ray/act',{step:step.id,values:step.values||{}});
-    if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
-      e.target.disabled=false; e.target.textContent=step.action; return; }
-    settle(c,d);
-    if(d.checklist) checklistCard(d.checklist, d.obligations);
-    if(d.backfill) backfillCard(d.backfill);
-    advance();
-  };
+function onLoop(e){
+  if(e.type !== 'recovered' && e.type !== 'escalated') return;
+  bubble('Raze', md(e.type === 'recovered'
+    ? '**' + e.orderId + '** — recovered ' + rupees(e.amount) + '.'
+    : '**' + e.orderId + '** is waiting for you. ' + (e.why || '')));
 }
 
-// The mapping: either what Raze found, or — when it could not tell — what the
-// merchant states, checked against their live schema before anything is armed.
-function mappingCard(step){
-  if(step.mapping){
-    const m=step.mapping;
-    const row=(k,v)=>'<tr><td class="mk">'+esc(k)+'</td><td class="mv">'+esc(v||'—')+'</td></tr>';
-    const c=card(
-      '<table class="decided">'
-      + row('table', m.table) + row('Razorpay order id', m.key)
-      + row('status', m.status) + row('credited to', m.credited)
-      + row('should cost', m.expected)
-      + '</table>'
-      + '<div class="actions"><button class="primary" id="yes">'+esc(step.action)+'</button>'
-      + '<button class="ghost" id="no">'+esc(step.alt)+'</button></div>'
-      + (step.note?'<div class="note">'+esc(step.note)+'</div>':'')+'<div id="e"></div>');
-
-    c.querySelector('#yes').onclick=async(e)=>{
-      e.target.disabled=true; e.target.textContent='Checking against your database…';
-      const d=await post('/api/ray/act',{step:'mapping',values:{
-        table:m.table,key:m.key,status:m.status,credited:m.credited,expected:m.expected}});
-      if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
-        e.target.disabled=false; e.target.textContent=step.action; return; }
-      settle(c,d);
-      if(d.integration) integrationCard(d.integration);
-      advance();
-    };
-    c.querySelector('#no').onclick=()=>{ c.innerHTML=''; statePicker(c,[m.table]); };
-    return;
-  }
-  const c=card('<div id="pick"></div>');
-  if(step.modelFailed) turn('Raze', md("I could not work it out from your schema on my own: "
-    + step.modelFailed + " I will not guess at which column marks an order paid, so tell me."));
-  statePicker(c.querySelector('#pick'), (step.pick&&step.pick.tables)||[]);
-}
-
-async function statePicker(host, tables){
-  host.innerHTML =
-    '<div class="field"><div class="lbl">Which table holds your orders?</div>'
-    + '<select id="mTable">'+tables.map(t=>'<option>'+esc(t)+'</option>').join('')+'</select></div>'
-    + '<div class="grid2"><div class="field"><div class="lbl">Razorpay order id</div><select id="mKey"></select></div>'
-    + '<div class="field"><div class="lbl">Paid / unpaid status</div><select id="mStatus"></select></div></div>'
-    + '<div class="field"><div class="lbl">Money is credited to</div><select id="mCred"></select></div>'
-    + '<div class="actions"><button class="primary" id="chk">Check these against my database</button></div>'
-    + '<div class="note">Every name is checked against your live schema before anything is armed.</div>'
-    + '<div id="e"></div>';
-  const load = async () => {
-    const d=await post('/api/ray/act',{step:'columns',values:{table:host.querySelector('#mTable').value}});
-    const opt=(l)=>l.map(c=>'<option>'+esc(c)+'</option>').join('');
-    host.querySelector('#mKey').innerHTML=opt(d.columns);
-    host.querySelector('#mStatus').innerHTML=opt(d.columns);
-    host.querySelector('#mCred').innerHTML=opt(d.numeric);
-  };
-  host.querySelector('#mTable').onchange=load;
-  await load();
-  host.querySelector('#chk').onclick=()=>{
-    askAmount(host, host.querySelector('#mTable').value, {
-      key: host.querySelector('#mKey').value,
-      status: host.querySelector('#mStatus').value,
-      credited: host.querySelector('#mCred').value,
-    });
-  };
-}
-
-// Asked, never inferred: two number columns look identical from outside, and
-// writing to the one a payment is checked against destroys the check.
-async function askAmount(host, table, chosen){
-  const cols=await post('/api/ray/act',{step:'columns',values:{table}});
-  const options=cols.numeric.filter(c=>c!==chosen.credited);
-  turn('Raze', md("Last thing. Which column says what an order **should** cost — as distinct "
-    + "from what has been credited so far?"));
-  const c=card(
-    '<div class="actions">'
-    + options.map(o=>'<button data-a="'+esc(o)+'"><code>'+esc(o)+'</code></button>').join('')
-    + '<button class="ghost" data-a="__none__">There is no such column</button></div>'
-    + '<div class="note">I will not guess this. Without it I can still tell you when Razorpay '
-    + 'and your database disagree, but I will not repair anything on my own — there would be '
-    + 'nothing to check a payment against.</div><div id="e"></div>');
-  c.querySelectorAll('[data-a]').forEach(b=>{
-    b.onclick=async()=>{
-      c.querySelectorAll('button').forEach(x=>x.disabled=true);
-      const expected=b.dataset.a==='__none__'?null:b.dataset.a;
-      const d=await post('/api/ray/act',{step:'mapping',values:{table,...chosen,expected}});
-      if(d.error){ c.querySelector('#e').innerHTML='<div class="err">'+esc(d.error)+'</div>';
-        c.querySelectorAll('button').forEach(x=>x.disabled=false); return; }
-      settle(c,d);
-      if(d.integration) integrationCard(d.integration);
-      advance();
-    };
-  });
-}
-
-function settle(c,d){
-  c.classList.add('done');
-  c.innerHTML='<div class="ok">✓ '+esc(d.confirm||'Done')+'</div>'
-    + (d.detail?'<div class="note">'+esc(d.detail)+'</div>':'');
-}
-
-function integrationCard(code){
-  turn('Raze', md("I've written your integration out as code you own. You don't have to run "
-    + "it — I apply the same mapping myself — but this is exactly what has been installed on "
-    + "your behalf, in your stack's terms."));
-  card('<pre>'+esc(code)+'</pre>');
-}
-
-// What Razorpay asks a merchant to do, and what Raze did instead.
-function checklistCard(steps, obligations){
-  card('<div class="lbl">On your Razorpay account</div>'
-    + steps.map(x=>'<div class="chk '+(x.done?'y':'n')+'"><span class="m">'
-      + (x.done?'✓':'—')+'</span><div><div>'+esc(x.what)+'</div>'
-      + (x.detail?'<div class="cd">'+esc(x.detail)+'</div>':'')+'</div></div>').join(''));
-  if(obligations && obligations.length){
-    turn('Raze', md("And the handler they ask you to write on your own server — signature "
-      + "over the raw body, deduplication, out-of-order events, answering inside five "
-      + "seconds. That is the part that usually goes wrong. It is already running."));
-    card('<div class="lbl">In your webhook handler</div>'
-      + obligations.map(o=>'<div class="chk y"><span class="m">✓</span><div><div>'
-        + esc(o.what)+'</div><div class="cd">'+esc(o.detail)+'</div></div></div>').join(''));
-  }
-}
-
-function backfillCard(b){
-  turn('Raze', md(b.missing
-    ? "Here's where you actually stand."
-    : "Nothing is missing. Every settled payment at Razorpay is in your database."));
-  card('<div class="figs">'
-    + '<div class="fig"><div class="k">Settled at Razorpay</div><div class="v">'+b.checked+'</div></div>'
-    + '<div class="fig '+(b.missing?'risk':'good')+'"><div class="k">Not in your database</div>'
-    + '<div class="v">'+b.missing+'</div></div>'
-    + (b.missing?'<div class="fig risk"><div class="k">At risk</div><div class="v">'+rupees(b.paise)+'</div></div>':'')
-    + '</div>');
-}
-
-// ---- once setup is done ----------------------------------------------------
-async function running(state){
-  const a=await get('/api/activity?hours=24');
-  const rec=a.recovered||{count:0,paise:0}, wait=a.waiting||{count:0,paise:0,orders:[]};
-  turn('Raze', md("I'm watching your payments now — checking against Razorpay every minute, "
-    + "and noticing when an order is created but the payment never arrives."));
-  card('<div class="figs">'
-    + '<div class="fig '+(rec.count?'good':'')+'"><div class="k">Recovered</div><div class="v">'+rupees(rec.paise)+'</div></div>'
-    + '<div class="fig '+(wait.count?'risk':'')+'"><div class="k">Waiting for you</div><div class="v">'+wait.count+'</div></div>'
-    + '</div>'
-    + (wait.orders||[]).slice(0,4).map(o=>'<div class="note"><code>'+esc(o.order_id)+'</code> '
-      + rupees(o.amount_paise)+' — '+esc(o.why)+'</div>').join(''));
-  $('chips').innerHTML=['is everything alright?','what are we missing?','what have you done today?']
+function finish(){
+  $('buildTitle').textContent = 'Set up';
+  $('buildSub').textContent = 'I am watching your payments now — checking against Razorpay '
+    + 'every minute, and noticing when an order is created but the payment never arrives.';
+  $('ask').classList.remove('hide');
+  $('chips').innerHTML = ['is everything alright?','what are we missing?','what have you done?']
     .map(q=>'<button class="chip">'+esc(q)+'</button>').join('');
   $('chips').querySelectorAll('.chip').forEach(b=>b.onclick=()=>ask(b.textContent));
+  refreshPill();
 }
 
-// ---- free conversation -----------------------------------------------------
+// ---- start -----------------------------------------------------------------
+$('go').onclick = async () => {
+  const body = {
+    keyId: $('keyId').value.trim(),
+    keySecret: $('keySecret').value.trim(),
+    databaseUrl: $('dbUrl').value.trim(),
+  };
+  if(!body.keyId || !body.keySecret || !body.databaseUrl){
+    $('introErr').innerHTML = '<div class="err">All three are needed before I can start.</div>';
+    return;
+  }
+  $('go').disabled = true;
+  $('intro').classList.add('hide');
+  $('build').classList.remove('hide');
+  $('build').classList.add('rise');
+  renderSteps();
+  await post('/api/ray/setup', body);
+};
+
+// ---- questions --------------------------------------------------------------
+function bubble(who, html){
+  const el = document.createElement('div');
+  el.className = 'msg';
+  el.innerHTML = '<div class="who">'+esc(who)+'</div><div>'+html+'</div>';
+  $('thread').appendChild(el);
+  el.scrollIntoView({behavior:'smooth',block:'nearest'});
+  return el;
+}
 async function ask(q){
   if(!q.trim()) return;
-  turn('You', esc(q));
-  $('ask').value='';
-  const t=turn('Raze','<span class="dots">thinking</span>');
-  $('send').disabled=true;
+  bubble('You', esc(q));
+  $('q').value = '';
+  const t = bubble('Raze','<span class="dots">thinking</span>');
+  $('send').disabled = true;
   try{
-    const d=await post('/api/agent/ask',{question:q});
-    t.querySelector('.said').innerHTML=md(d.text||'No answer came back.');
+    const d = await post('/api/agent/ask',{question:q});
+    t.querySelector('div:last-child').innerHTML = md(d.text || 'No answer came back.');
     refreshPill();
-  }catch(err){ t.querySelector('.said').textContent='I could not answer: '+err.message; }
-  finally{ $('send').disabled=false; }
+  }catch(err){ t.querySelector('div:last-child').textContent = 'I could not answer: '+err.message; }
+  finally{ $('send').disabled = false; }
 }
-$('send').onclick=()=>ask($('ask').value);
-$('ask').onkeydown=(e)=>{ if(e.key==='Enter') ask($('ask').value); };
+// Setup is not a one-way door. Whoever is holding this console may be trying a
+// second database, moving off a trial, or rotating a key — and a finished setup
+// that hides the form leaves them with nowhere to type.
+$('again').onclick = async () => {
+  $('again').disabled = true;
+  $('again').textContent = 'disconnecting…';
+  await post('/api/ray/reset', {});
+  location.reload();
+};
 
-const TONE={PROTECTED:'good',DIVERGED:'bad',STALE:'warn',UNARMED:'warn',BLIND:'warn',
+$('send').onclick = () => ask($('q').value);
+$('q').onkeydown = (e) => { if(e.key === 'Enter') ask($('q').value); };
+
+const TONE = {PROTECTED:'good',DIVERGED:'bad',STALE:'warn',UNARMED:'warn',BLIND:'warn',
   DISCONNECTED:'warn',MISMATCHED:'warn'};
 async function refreshPill(){
   try{
-    const s=await get('/api/agent/state');
-    $('pill').textContent=s.state||'…';
-    $('pill').className='pill '+(TONE[s.state]||'');
-    $('pill').title=s.says||'';
+    const s = await (await fetch('/api/agent/state')).json();
+    $('pill').textContent = s.state || '—';
+    $('pill').className = 'pill ' + (TONE[s.state] || '');
+    $('pill').title = s.says || '';
   }catch{}
 }
 
-refreshPill();
-setInterval(refreshPill, 45000);
-advance();
+// A finished setup should not make someone do it again.
+(async () => {
+  try{
+    const s = await (await fetch('/api/setup')).json();
+    if(s.complete){
+      $('intro').classList.add('hide');
+      $('build').classList.remove('hide');
+      renderSteps();
+      STEPS.forEach(([id]) => setStep(id,'done'));
+      finish();
+    }
+  }catch{}
+  refreshPill();
+  setInterval(refreshPill, 45000);
+})();
 </script>
 </body>
 </html>

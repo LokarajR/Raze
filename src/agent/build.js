@@ -45,7 +45,7 @@ async function listWebhooks(creds) {
  * merchant needs to see. They need to know which of the things they were told to
  * do have actually been done, and how each was confirmed.
  */
-async function buildIntegration({ creds, publicUrl, events, alertEmail, existing }) {
+async function buildIntegration({ creds, publicUrl, events, alertEmail, existing, knownSecret }) {
   const steps = [];
   const add = (what, done, detail) => steps.push({ what, done, detail });
 
@@ -63,7 +63,36 @@ async function buildIntegration({ creds, publicUrl, events, alertEmail, existing
   const url = publicUrl.replace(/\/+$/, '') + '/webhook';
   add('An endpoint Razorpay can reach', true, url);
 
-  // ---- 2. reuse rather than duplicate ------------------------------------
+  // ---- 2. say what is stale, because it cannot be removed -----------------
+  //
+  // A temporary address dies with the process that opened it, so a machine that
+  // has run Raze twice leaves a webhook pointing at nothing.
+  //
+  // Raze cannot clean that up, and the reason is worth recording rather than
+  // discovering twice: the account-level webhook API is create and list only.
+  // DELETE /v1/webhooks/{id} and PATCH /v1/webhooks/{id} both answer
+  //
+  //     404 {"message":"no Route matched with those values"}
+  //
+  // which reads like the webhook is missing when in fact the verb is. Editing
+  // and removing webhooks exist only on the partner route, under an account id a
+  // merchant using their own keys does not have.
+  //
+  // So this reports the stale entries instead of silently leaving them, and says
+  // what happens next — measured, not assumed: Razorpay retries a failing
+  // endpoint 16 times across 22.76 hours and then deactivates it on its own.
+  // The right fix is upstream of all of it, and is the reason a permanent
+  // address beats a temporary one: register once, adopt it forever after.
+  const stale = (existing || []).filter((w) => w.active && w.url !== url
+    && /^https:\/\/[a-z0-9-]+\.trycloudflare\.com\//i.test(w.url || ''));
+  if (stale.length) {
+    add('Older temporary addresses on this account', false,
+      `${stale.map((w) => w.id).join(', ')} — Razorpay's account API has no route to remove `
+      + 'a webhook, so these stay until Razorpay deactivates them itself after sustained '
+      + 'failure. Give Raze a permanent address and this stops happening.');
+  }
+
+  // ---- 3. reuse rather than duplicate ------------------------------------
   const already = (existing || []).find((w) => w.url === url && w.active);
   if (already) {
     const have = Object.keys(already.events || {}).filter((k) => already.events[k]);
@@ -85,16 +114,31 @@ async function buildIntegration({ creds, publicUrl, events, alertEmail, existing
     } else {
       add('The events your schema can record', true, have.join(', '));
     }
-    return { ok: true, steps, webhook: already, secret: null, adopted: true };
+    // Adopting is right — a second webhook on one URL delivers everything twice
+    // — but it has a cost worth stating rather than discovering. Razorpay shows
+    // a signing secret once, at creation. If this instance was not the one that
+    // created this webhook and did not keep the secret, it cannot verify what
+    // Razorpay signs, and an unverified delivery is not acted on: reconciliation
+    // handles those orders a minute later instead. Saying so beats a console
+    // that looks connected and quietly uses only half its machinery.
+    add('Able to verify what Razorpay sends', !!knownSecret,
+      knownSecret
+        ? 'the signing secret from this webhook\'s registration is on file'
+        : 'this webhook was registered by another run and Razorpay shows a secret only '
+          + 'once, so deliveries here cannot be checked and are left to reconciliation. '
+          + 'Delete it in the dashboard and Raze will register a fresh one it can verify.');
+
+    return { ok: true, steps, webhook: already, secret: null, adopted: true,
+      verifiable: !!knownSecret };
   }
 
-  // ---- 3. the secret ------------------------------------------------------
+  // ---- 4. the secret ------------------------------------------------------
   // Generated here. A merchant choosing their own picks a weak one, and a
   // merchant who has to remember one has a secret written down somewhere.
   const secret = crypto.randomBytes(24).toString('hex');
   add('A signing secret', true, '24 random bytes, generated here and never displayed');
 
-  // ---- 4. registration ----------------------------------------------------
+  // ---- 5. registration ----------------------------------------------------
   const payload = {
     url,
     secret,
@@ -117,7 +161,7 @@ async function buildIntegration({ creds, publicUrl, events, alertEmail, existing
   add('Subscribed to the events your schema can record', true, wanted.join(', '));
   if (alertEmail) add('An alert address for delivery failures', true, alertEmail);
 
-  // ---- 5. read it back ----------------------------------------------------
+  // ---- 6. read it back ----------------------------------------------------
   // A registration the provider has not confirmed is not a registration.
   const back = await listWebhooks(creds);
   const live = back.find((w) => w.id === body.id);
@@ -168,3 +212,35 @@ function handlerObligations() {
 }
 
 module.exports = { buildIntegration, handlerObligations, listWebhooks, ALL_EVENTS };
+
+/**
+ * The mapping the runtime writes with, built from the columns setup chose.
+ *
+ * Setup was already constructing this to validate the merchant's schema, then
+ * throwing it away — so the loops were created without one and every repair
+ * stopped at "nothing here can say how to write your orders table from a
+ * captured payment", which read as a mapping the merchant had not confirmed
+ * when in fact it was a mapping nobody had handed over.
+ *
+ * Kept here so setup and restart build the identical thing; two copies of this
+ * would eventually disagree, and the one that disagreed would be the one
+ * writing to a merchant's database.
+ */
+function mappingSpecFor(chosen) {
+  if (!chosen || !chosen.table || !chosen.key || !chosen.status || !chosen.credited) return null;
+  const mapping = require('../mapping');
+  return mapping.normalise('payment.captured', {
+    table: chosen.table,
+    key: { column: chosen.key, from: 'payload.payment.entity.order_id' },
+    set: { [chosen.status]: { literal: 'paid' } },
+    add: { [chosen.credited]: 'payload.payment.entity.amount' },
+    // A refunded order is not a paid one, and moving it back would be a repair
+    // that loses the merchant money rather than finding it.
+    guard: { column: chosen.status, notIn: ['refunded'] },
+    // Raze repairs rows that exist. Inventing an order from a payment would be
+    // inventing a customer.
+    insertIfMissing: false,
+  });
+}
+
+module.exports.mappingSpecFor = mappingSpecFor;

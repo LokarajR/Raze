@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kettle &amp; Crumb</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ink:#1b1a17; --ink-soft:#55524b; --line:#e2ddd3; --paper:#faf8f4;
+  --card:#ffffff; --green:#1f5d43; --green-soft:#e8f1ec;
+  --amber:#8a5a12; --amber-soft:#fbf1de; --red:#8d2f26;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:16px/1.55 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+header{border-bottom:1px solid var(--line);background:var(--card)}
+.wrap{max-width:1020px;margin:0 auto;padding:0 24px}
+header .wrap{display:flex;align-items:baseline;gap:14px;padding-top:20px;padding-bottom:20px}
+h1{font:600 25px/1 Fraunces,Georgia,serif;margin:0;letter-spacing:-.01em}
+header span{color:var(--ink-soft);font-size:13.5px}
+main{display:grid;grid-template-columns:1.05fr 1fr;gap:28px;padding:28px 0 60px}
+@media(max-width:860px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:22px}
+h2{font:600 13px/1 Inter,sans-serif;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-soft);margin:0 0 16px}
+label{display:block;font-size:13px;color:var(--ink-soft);margin:14px 0 6px}
+input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;
+  font:inherit;font-size:15px;background:var(--paper);color:var(--ink)}
+input:focus,select:focus{outline:2px solid var(--green);outline-offset:1px;border-color:transparent}
+button{margin-top:20px;width:100%;padding:12px 16px;border:0;border-radius:7px;
+  background:var(--green);color:#fff;font:600 15px Inter,sans-serif;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.leave{margin-top:18px;padding:13px 14px;border:1px dashed var(--line);border-radius:8px;
+  background:var(--amber-soft);display:flex;gap:10px;align-items:flex-start}
+.leave input{width:auto;margin-top:3px}
+.leave div{font-size:13px;color:var(--amber);line-height:1.45}
+.leave b{color:var(--ink)}
+table{width:100%;border-collapse:collapse;font-size:13.5px;
+  font-variant-numeric:tabular-nums}
+th{text-align:left;font-weight:500;color:var(--ink-soft);font-size:11.5px;
+  letter-spacing:.07em;text-transform:uppercase;padding:0 8px 8px 0;border-bottom:1px solid var(--line)}
+td{padding:9px 8px 9px 0;border-bottom:1px solid var(--line)}
+td.num{text-align:right;padding-right:0}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11.5px;font-weight:600}
+.paid{background:var(--green-soft);color:var(--green)}
+.pending{background:var(--amber-soft);color:var(--amber)}
+.alarm{margin-bottom:16px;padding:13px 15px;border-radius:8px;border:1px solid #f0d9c9;
+  background:#fdf3ec;font-size:13.5px;color:var(--red);display:none}
+.alarm.on{display:block}
+.alarm b{font-weight:600}
+.note{margin-top:14px;font-size:12.5px;color:var(--ink-soft);line-height:1.5}
+.scroll{overflow-x:auto}
+.msg{margin-top:14px;font-size:13.5px;color:var(--ink-soft);min-height:20px}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>Kettle &amp; Crumb</h1>
+  <span>coffee things, since 2019 · Razorpay Test Mode</span>
+</div></header>
+
+<div class="wrap"><main>
+  <section class="card">
+    <h2>Place an order</h2>
+    <label for="item">Item</label>
+    <select id="item"></select>
+    <label for="qty">Quantity</label>
+    <input id="qty" type="number" min="1" max="9" value="1">
+    <label for="email">Email</label>
+    <input id="email" type="email" placeholder="you@example.com" value="">
+    <button id="buy">Pay with Razorpay</button>
+
+    <div class="leave">
+      <input type="checkbox" id="leave">
+      <div><b>Customer closes the tab after paying.</b>
+        Pays for real, then never comes back to this page — a train goes into a
+        tunnel, a browser is killed, a phone rings. The card is charged either way.
+        Nothing about Razorpay changes; only whether this shop hears about it.</div>
+    </div>
+    <div class="msg" id="msg"></div>
+    <div class="note">This shop marks an order paid when the browser returns and
+      says so. That is the whole of its payment handling, and it is what a first
+      integration looks like.</div>
+  </section>
+
+  <section class="card">
+    <h2>The order book</h2>
+    <div class="alarm" id="alarm"></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Order</th><th>Item</th><th>State</th>
+        <th class="num">Billed</th><th class="num">Received</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="5" style="color:#55524b">loading…</td></tr></tbody>
+    </table></div>
+    <div class="note" id="foot"></div>
+  </section>
+</main></div>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+const KEY_ID = '__KEY_ID__';
+const $ = (id) => document.getElementById(id);
+const rupees = (p) => '₹' + (Math.round(Number(p)||0)/100)
+  .toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+
+let catalogue = [];
+
+async function loadCatalogue(){
+  const r = await (await fetch('/api/catalogue')).json();
+  catalogue = r.items;
+  $('item').innerHTML = catalogue
+    .map(c => '<option value="'+c.sku+'">'+c.name+' — '+rupees(c.paise)+'</option>').join('');
+}
+
+async function loadOrders(){
+  const r = await (await fetch('/api/orders')).json();
+  const rows = r.orders || [];
+  $('rows').innerHTML = rows.length ? rows.map(o => {
+    const paid = o.order_state === 'paid';
+    return '<tr><td>'+o.order_ref+'</td><td>'+o.item
+      +(o.quantity>1?' ×'+o.quantity:'')+'</td>'
+      +'<td><span class="pill '+(paid?'paid':'pending')+'">'+o.order_state+'</span></td>'
+      +'<td class="num">'+rupees(o.amount_due_paise)+'</td>'
+      +'<td class="num">'+rupees(o.amount_paid_paise)+'</td></tr>';
+  }).join('') : '<tr><td colspan="5" style="color:#55524b">no online orders yet</td></tr>';
+
+  const t = r.totals || {};
+  const alarm = $('alarm');
+  if (t.pending > 0) {
+    alarm.className = 'alarm on';
+    alarm.innerHTML = '<b>' + t.pending + ' order(s) sitting at pending, '
+      + rupees(t.pending_paise) + ' unaccounted.</b> Razorpay may well have the money. '
+      + 'This shop has no way to find out — nothing here ever asks.';
+  } else {
+    alarm.className = 'alarm';
+  }
+  $('foot').textContent = t.total + ' orders in the book, ' + rows.length
+    + ' of them taken online.';
+}
+
+$('buy').addEventListener('click', async () => {
+  const btn = $('buy');
+  btn.disabled = true;
+  $('msg').textContent = 'creating the order…';
+  try {
+    const made = await (await fetch('/api/order', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({
+        sku: $('item').value, quantity: Number($('qty').value)||1, email: $('email').value })
+    })).json();
+    if (made.error) { $('msg').textContent = made.error; btn.disabled = false; return; }
+
+    await loadOrders();
+    $('msg').textContent = made.orderRef + ' created, waiting for payment…';
+
+    const walksAway = $('leave').checked;
+    const rz = new Razorpay({
+      key: made.keyId || KEY_ID,
+      order_id: made.gatewayOrderId,
+      amount: made.amount,
+      currency: 'INR',
+      name: 'Kettle & Crumb',
+      description: made.item,
+      prefill: { email: made.email },
+      handler: async function (resp) {
+        // The customer who stayed. This is the only thing that marks the order
+        // paid, and it runs in their browser — which is the point.
+        if (walksAway) {
+          $('msg').textContent = made.orderRef + ' — paid at Razorpay, and this tab '
+            + 'closed before telling the shop. The order stays pending.';
+          setTimeout(loadOrders, 800);
+          btn.disabled = false;
+          return;
+        }
+        await fetch('/api/confirm', { method:'POST',
+          headers:{'content-type':'application/json'},
+          body: JSON.stringify({ gatewayOrderId: made.gatewayOrderId }) });
+        $('msg').textContent = made.orderRef + ' paid, thank you.';
+        await loadOrders();
+        btn.disabled = false;
+      },
+      modal: { ondismiss: () => {
+        $('msg').textContent = made.orderRef + ' — checkout closed without paying.';
+        btn.disabled = false;
+      } },
+    });
+    rz.open();
+  } catch (err) {
+    $('msg').textContent = err.message;
+    btn.disabled = false;
+  }
+});
+
+loadCatalogue();
+loadOrders();
+setInterval(loadOrders, 5000);
+</script>
+</body>
+</html>
