@@ -16,7 +16,7 @@
  *   zero findings, every time. A detector that fires on correct code is worse
  *   than no detector, so `auditControl` asserts exactly that.
  *
- * Fixtures are the 796-delivery corpus from measurement/RESULTS.md — real bodies,
+ * Fixtures are the 796-delivery corpus from the research section of README.md — real bodies,
  * real headers, real signatures. The only bytes ever altered are in the tampered-
  * signature probe, which alters the signature header and says so.
  */

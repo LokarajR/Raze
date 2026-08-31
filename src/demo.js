@@ -10,7 +10,7 @@
  * The sever step drops webhooks at RAZE'S OWN INTAKE. It does not disable
  * anything at Razorpay, and it is never described as Razorpay disabling the
  * endpoint — that is a different behaviour, and it was measured separately
- * (see measurement/RESULTS.md).
+ * (see the research section of README.md).
  */
 
 const path = require('path');

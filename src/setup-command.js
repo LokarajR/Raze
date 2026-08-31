@@ -79,7 +79,7 @@ module.exports = async function cmdSetup({ env, flag, has, LOG, RAZE, deps }) {
     console.error('    raze setup --url https://your-host/webhook');
     console.error('');
     console.error('  Razorpay rejects localhost when saving a webhook, so this has to be a');
-    console.error('  public HTTPS address. See DEPLOY.md for Railway, Render and Fly.');
+    console.error('  public HTTPS address. See the README for deploying to Railway, Render or Fly.');
     console.error('  Add --dry-run to see every action without changing anything.\n');
     process.exit(1);
   }

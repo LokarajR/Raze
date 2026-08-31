@@ -24,7 +24,7 @@
 
 const RUPEES = (paise) => Math.round(paise) / 100;
 
-/** From measurement/RESULTS.md — the observed Razorpay retry behaviour. */
+/** From the research section of README.md — the observed Razorpay retry behaviour. */
 const MEASURED = {
   maxDeliveries: 16,
   firstRetryMs: 230,

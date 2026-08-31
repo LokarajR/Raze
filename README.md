@@ -1,1013 +1,573 @@
 # Raze
 
-Raze keeps merchant business state correct when Razorpay webhook delivery is
-duplicated, delayed, rejected, or absent.
+**A merchant's order says pending. Razorpay has the money. Nothing in either
+system will ever notice.**
 
-It is not a testing tool. It is a correctness layer that sits between Razorpay's
-event delivery and the merchant's business state.
+Raze is the layer that notices. It reads a merchant's database, works out how
+their orders relate to Razorpay payments, builds the Razorpay-side integration
+for them, and from then on keeps the two in agreement — repairing what it can
+prove and refusing everything else by name.
 
-> **New here?** Read **[PITCH.md](PITCH.md)** — what the problem is, what we
-> measured against live Razorpay infrastructure, and what Raze does about it.
-> Then **[DEMO.md](DEMO.md)** runs a shop, loses a real payment, and watches Raze
-> find it — entirely on your own machine, no webhook and no deployment needed.
-> **[QUICKSTART.md](QUICKSTART.md)** is the shortest path from clone to a passing
-> suite.
+The merchant connects a database and supplies keys. They are asked nothing else,
+and their own code does not change by one character.
 
-The shop used in the demo lives in **[`storefront/`](storefront/)**. It is a
-normal small integration with a normal bug: it marks an order paid when the
-customer's browser comes back, and nothing else ever asks again. It does not
-import Raze and has no webhook handler. Raze fixes it from the outside without
-that code changing.
+---
 
-## The guarantee
+## Contents
 
-> **Every payment Razorpay records reaches merchant state exactly once, without
-> depending on webhook delivery. An order is only unpaid if the customer never
-> paid.**
+1. [The problem, as it actually happens](#1-the-problem-as-it-actually-happens)
+2. [What Raze does](#2-what-raze-does)
+3. [What it refuses to do](#3-what-it-refuses-to-do)
+4. [The research this is built on](#4-the-research-this-is-built-on)
+5. [What we got wrong, and how we found out](#5-what-we-got-wrong-and-how-we-found-out)
+6. [How it works](#6-how-it-works)
+7. [Run it](#7-run-it)
+8. [The demo: lose a payment, watch it come back](#8-the-demo-lose-a-payment-watch-it-come-back)
+9. [Evidence you can re-run](#9-evidence-you-can-re-run)
+10. [Why this is not "ask an AI to fix the handler"](#10-why-this-is-not-ask-an-ai-to-fix-the-handler)
+11. [Honest limitations](#11-honest-limitations)
+12. [Commands and layout](#12-commands-and-layout)
 
-That claim is attacked directly by `npm run chaos`: a worker SIGKILLed
-mid-transaction, a handler failing its first two attempts at every event, forged
-deliveries mixed into the stream, every delivery dropped, and the database
-terminated underneath. Each payment still lands exactly once.
+---
 
-**No model is involved in any of it.** The whole suite — 95 assertions across ten
-layers — passes with no API key and no local model reachable. Raze does not read
-your code and guess; it replays deliveries Razorpay really sent and reads the
-state your database really holds. One optional command (`raze fix`) generates
-code and is documented as an appendix; nothing else can even reach a model.
+## 1. The problem, as it actually happens
 
-## One command
+A shop creates a Razorpay order, opens Checkout, and marks the order paid when
+the customer's browser comes back and says the payment succeeded.
 
-You have a database and an unfinished webhook story — no handler, a half-written
-one, or a generated one nobody has verified:
+That is what a first integration looks like. It is the path the quickstart shows,
+and it works every single time you test it — because you never close the tab.
+
+A customer on a train does. Their card is charged. Razorpay has the money. The
+shop's database still says `pending`, and it will say `pending` forever, because
+nothing in that program will ever ask again. The order is not shipped and the
+customer's money is gone.
+
+Razorpay's answer is webhooks, and their documentation then hands the merchant a
+second job:
+
+| What Razorpay requires of the merchant | What happens if they get it wrong |
+|---|---|
+| Verify HMAC-SHA256 over the **raw** body — "do not parse or cast" | Forged deliveries are accepted, or genuine ones rejected |
+| Deduplicate on `x-razorpay-event-id` | The same payment is credited twice |
+| Tolerate events arriving out of order — "the above order may not be followed at all times" | A refunded order flips back to paid |
+| Answer 2xx within five seconds | A timeout produces a retry, which produces a duplicate |
+| *(not on their list)* Survive a delivery that never arrives | The money is simply lost |
+
+Most shops do not do all five. Some do none.
+
+This repository contains a shop with exactly this bug — `storefront/`. Nothing in
+it is sabotaged. There is no flag that breaks it, no injected failure, and
+nothing about Razorpay is simulated: it creates real Test Mode orders against the
+real API. It is written the ordinary way, and the ordinary way loses money.
+
+---
+
+## 2. What Raze does
+
+Given a database URL and a Razorpay key pair, and nothing else:
+
+**1 — Reads the schema.** Decides which table holds orders, which column carries
+the Razorpay order id, which says whether an order is paid, which money column
+records what is *owed*, and which records what was *received*.
+
+**2 — Verifies every one of those claims against the live database** before
+believing any of it. The columns must exist. The money columns must be numeric.
+The key column's values must actually look like Razorpay order ids. The
+expected-amount column must not be the same one money is credited to. Anything
+that fails a check is dropped.
+
+**3 — Builds the Razorpay side.** Generates a signing secret, registers the
+webhook, subscribes to only the events this merchant's schema can actually
+record, then reads the registration back from Razorpay to confirm it. A
+registration the provider has not confirmed is not a registration.
+
+**4 — Backfills.** Asks Razorpay what it already recorded and reports what the
+merchant's database never applied — a real number, before anything is repaired.
+
+**5 — Watches**, on three independent timers:
 
 ```
-npx raze up --orders orders --key razorpay_order_id
+reconcile   every 60s   ask Razorpay what it recorded, compare, act
+poll        every 20s   ask about each open order by name
+sweep       every 30s   resolve deadlines that have passed
 ```
 
-That single run migrates, reads your schema and derives the event mappings,
-registers the webhook with Razorpay, arms expectations with a deadline your own
-traffic justifies, backfills history, starts the runtime, reconciliation, ledger
-and outbox — then reports exactly what is covered and what is not.
+Meanwhile the five merchant obligations are met **outside the merchant's
+codebase**: the signature is checked over raw bytes before anything parses them;
+the event id is stored under a uniqueness constraint, so a duplicate is rejected
+by the database rather than by a check that can race; event types are ranked so a
+transition cannot move an order backwards; the delivery is acknowledged as soon
+as it is durably stored, before any business logic runs; and reconciliation asks
+Razorpay what it recorded rather than waiting to be told.
 
-Here is a real run against a database with two order rows, **no handler, no
-secret and no endpoint**, so nothing was ever delivered by webhook:
+### The one judgement it will not guess
+
+One money column records **what was owed**. Another records **what arrived**. A
+payment is applied only after it agrees with the first.
+
+Get those two backwards and every payment verifies against a figure it wrote
+itself — which is worse than no checking at all, because it produces a system
+that is confidently wrong. When a schema does not clearly distinguish them, Raze
+reports divergence and never repairs unattended.
+
+---
+
+## 3. What it refuses to do
+
+Anyone can write something that marks orders paid. The question is what it does
+when it should **not** write.
+
+| Situation | Rule | What happens |
+|---|---|---|
+| Razorpay has a payment, no matching order exists | `no-matching-order` | Refused. Creating the row would invent a customer. |
+| Payment is refunded, not captured | `payment-not-captured` | Refused. |
+| Amount disagrees with what the order was owed | `amount-mismatch` | Refused, both figures quoted in rupees. |
+| Order is already settled | `order-already-paid` | Refused. Applying again would credit twice. |
+| The key would touch more than one row | `would-touch-multiple-rows` | Refused. A repair that touches several rows is not a repair. |
+| No column records what was owed | `amount-not-verifiable` | Reported, never repaired unattended. |
+| The merchant's writes trigger shipping | `merchant-has-side-effects` | Never auto-repaired. |
+| Mapping not confirmed | `mapping-not-confirmed` | Refused. |
+
+Every rule fails toward escalation. And a repair is not reported as done until
+Raze has **read the row back out of the merchant's own table** — an exception not
+being thrown proves nothing, and a queue accepting a row proves a row exists, not
+that money landed where the merchant can see it.
+
+---
+
+## 4. The research this is built on
+
+Everything above is a consequence of something we measured against live Razorpay
+infrastructure. None of it is assumed.
+
+Razorpay's documentation says retries happen "on an exponential backoff schedule
+over 24 hours" and never publishes the schedule. We recorded it.
+
+**796 real deliveries. Four runs. One continuous server process, zero restarts.
+Signatures verified on every single one.** The corpus ships in `measurement/` and
+every test in this repository replays it.
+
+### Method
+
+Five endpoints were deployed behind one public host, each replying differently:
 
 ```
-order_TUorOYH8gErbbD   paid       100 paise   recovered by reconciliation
-order_TVCpvdEADkAoMJ   refunded   100 paise   recovered by reconciliation
-order_TVRgqVVfsPAubD   refunded   100 paise   recovered by reconciliation
-order_never_paid_1     pending      0 paise   the customer never paid
+mode-200    replies 200          the control
+mode-400    replies 400          "malformed request"
+mode-500    replies 500          server error
+mode-slow   sleeps 8s, then 200  slower than the 5s limit
+mode-drop   destroys the socket  no reply at all
 ```
 
-The only failed order is the one nobody paid for.
+Real Razorpay Test Mode payments were then driven through Checkout, so every
+delivery below is a genuine HTTP request that arrived from Razorpay's
+infrastructure carrying a valid signature.
 
-Add `--url https://your-host/webhook` to register the endpoint too, and
-`--dry-run` to see every action before anything changes.
+| Run | First delivery (UTC) | Last delivery (UTC) | Deliveries | Events | Purpose |
+|---|---|---|---|---|---|
+| 1 | `2026-08-27T14:03:39Z` | `2026-08-28T12:50:45Z` | 189 | 3 | Baseline, payment lifecycle only |
+| 2 | `2026-08-28T13:30:03Z` | `2026-08-29T12:24:08Z` | 311 | 5 | Reproduction, plus refunds and failures |
+| 3 | `2026-08-29T04:00:07Z` | `2026-08-29T09:45:09Z` | 271 | 5 | Morning slot — tests time-of-day dependence |
+| 4 | `2026-08-29T12:35:08Z` | `2026-08-29T12:38:19Z` | 25 | 1 | Fourth `payment.failed` sample |
 
-## Why this is not "ask an AI to fix the handler"
+Run 3 closed on **exactly the same 231-delivery count** as Run 2, with a per-mode
+table identical in every cell but one.
+
+### One retry ladder, end to end
+
+Run 1, `mode-500`, `payment.captured`, event `TUouniJth9WtQ2`:
+
+| # | Since first delivery | Gap from previous |
+|---:|---:|---:|
+| 1 | **0.23s** | 0.23s |
+| 2 | 6.08s | 5.84s |
+| 3 | 19.13s | 13.05s |
+| 4 | 39.55s | 20.42s |
+| 5 | 1.37m | 42.75s |
+| 6 | 2.74m | 82.22s |
+| 7 | 5.43m | 161.54s |
+| 8 | 10.84m | 324.44s |
+| 9 | 21.56m | 642.92s |
+| 10 | 42.94m | 1283.09s |
+| 11 | 1.43h | 2563.38s |
+| 12 | 2.85h | 5127.36s |
+| 13 | 5.70h | 10240.81s |
+| 14 | 11.39h | 20480.51s |
+| 15 | **22.76h** | 40964.44s |
+| — | *never arrived* | **ladder ended** |
+
+Sixteen deliveries. Fourteen doublings, ratio 2.00 from the fifth gap onward. The
+predicted seventeenth attempt at +45.5h never came, and was 45 minutes overdue on
+a schedule that had held to ±5 seconds at every prior step.
+
+**The stopping rule is the window, not an attempt count.** Doubling continues
+until the next step would fall outside 24 hours, then stops. 22.76h is simply
+where the fourteenth doubling lands before that cap.
+
+Two runs a day apart agreed on the 11.4-hour step **to within five seconds** — a
+0.01% divergence. This schedule is not merely unjittered; it is clocked.
+
+### Six findings, and the line of code each one forces
+
+| Finding | Consequence |
+|---|---|
+| **First retry at 0.23s** for payment-lifecycle events | The runtime answers 200 *before* processing. A synchronous handler is not likely to get a duplicate — it is guaranteed one. |
+| **16 deliveries over 22.76h**, 14 doublings | The retry storm is real, not hypothetical. Deduplication must survive it. |
+| **Nothing after 22.8h is ever delivered** | Waiting is not a recovery strategy. Reconciliation is mandatory, not a nicety. |
+| **Sustained failure disables the endpoint entirely** — observed directly, reproduced twice | Delivery never resumes without human action, so a deadline is the only remaining signal. A merchant whose endpoint was switched off is not told by their own system. |
+| **HTTP 400 is retried** on the same curve as 500 | Rejecting malformed webhooks with a 400 earns another ten copies. 4xx is not a "stop" signal. |
+| **There is no retry counter in the request** — only `event_id`, signature, and `user-agent: Razorpay-Webhook/v1` | A receiver cannot tell attempt 1 from attempt 11 by looking at it. Deduplication **must** be stateful on the receiver's side. This is a negative result and the most product-relevant thing we found. |
+
+The endpoint deactivation was observed directly: at `2026-08-29T12:08Z` Razorpay
+disabled all four failing probe endpoints within 40 seconds of each other and
+emailed a notice for each. Two of them still received a delivery ~14 minutes
+after their stated "final attempt". It reproduced the following day, with
+`mode-200` surviving as the control both times.
+
+### A seventh finding, from building this
+
+**Razorpay's list endpoints lag by minutes.** A payment captured seconds ago can
+be absent from `GET /v1/payments` and from the dashboard, while
+`GET /v1/orders/{id}` reports that order paid immediately.
+
+We hit this live. Reconciliation that only enumerates has a blind window exactly
+where a fresh payment lives — and worse, a console built on that list will tell a
+merchant "everything is accounted for, 0 captured payments" while their money
+sits at Razorpay. True of the list; false about the money.
+
+Raze therefore asks about each open order **by name**, on its own timer,
+independent of the enumeration. The list is still consulted and still shown — and
+labelled as the weakest evidence on the page.
+
+---
+
+## 5. What we got wrong, and how we found out
+
+Three claims were written down and later overturned by more data. They are kept
+here because a research process that only reports its wins is not a research
+process.
+
+**Claim: the second retry tier depends on time of day.** Runs 2 and 3 differed —
+8.6s versus 5.9s for the non-instant tier — and each run's three modes clustered
+tightly (spread 0.24s and 0.13s). That tightness seemed to rule out noise, so we
+argued for a real per-run difference with time of day the leading candidate.
+
+**Run 4 refuted it.** Its within-run spread was 1.63s — wider than the
+between-run gap that had made the two-regime story convincing. The tight
+clustering in the first two runs was itself coincidence. Three samples spanning
+04:02Z, 12:35Z and 13:37Z show no monotonic pattern.
+
+The honest number is **~6–9s** for the non-instant tier. Not 8.6s, not 5.9s, and
+not a function of time of day. `mode-slow` is the control that proves the
+variance is real rather than a measurement artifact: 12.65 / 13.09 / 12.32s
+across all three samples, because its 8-second handler delay dominates whatever
+jitter sits underneath.
+
+The two-tier structure itself — payment-lifecycle events retry instantly at
+~0.23s, `refund.created` and `payment.failed` do not — reproduced in every sample
+and is not in doubt. Only the magnitude of the second tier was mis-stated.
+
+**Claim: one `event_id` identifies one delivery stream.** It does not. Razorpay
+assigns one id per event and delivers it to every subscribed endpoint. The first
+version of the analyser grouped by `event_id` alone and merged five independent
+endpoint streams into one bogus delta sequence. Grouping is now by
+`(mode, event_id)`. Worth knowing for any merchant running more than one webhook
+config.
+
+**Claim: `mode-drop` measures a connection reset.** It does not, on this host.
+Railway's edge converts a destroyed origin socket into a 502 before Razorpay sees
+it, which is why its timing matches `mode-500` to within 0.2s. Measuring a true
+reset needs a host that does not terminate TLS at an edge proxy. The limitation
+is the instrument, not the finding.
+
+Had we written the demo around "Razorpay retries in 200ms" as a universal claim,
+a refund-based demo would have sat there looking broken for six seconds. That is
+the clearest argument in the whole exercise for insisting on more than one run:
+**the sample, not the instrument, was the limitation.**
+
+---
+
+## 6. How it works
+
+### The path a delivery takes
+
+```
+Razorpay
+   │
+   ▼
+signature checked over raw bytes ──────► rejected if it fails
+   │
+   ▼
+stored in the inbox, event_id unique ───► duplicate rejected by the database
+   │
+   ▼
+200 returned  (before any business logic — this is why 0.23s cannot hurt)
+   │
+   ▼
+drained: event type ranked, guards applied, mapping applied
+   │
+   ▼
+row read back out of the merchant's table ──► only now is it "done"
+```
+
+### The three things running underneath
+
+**Reconciliation** asks Razorpay what it recorded and compares against the
+merchant's rows. This is the mechanism that does not depend on delivery at all —
+which is why the demo below works with no webhook registered anywhere.
+
+**The targeted poll** starts from the merchant's unpaid orders and asks Razorpay
+about each one by name. Bounded: only orders carrying a gateway id, only the most
+recent, one request each. This is what catches a payment the list has not caught
+up with.
+
+**The expectation ledger** detects *absence*. An order created and then silent
+past a deadline is a different problem from an order that failed, and it is the
+only signal left when an endpoint has been deactivated.
+
+### The split that makes a model safe to involve
+
+A model reads the schema and proposes which column is which. **Deterministic code
+then checks every claim against the live database**, and anything that fails a
+check is dropped. A wrong answer from the model cannot arm a wrong mapping; the
+worst it can do is fail a check and cost the merchant a question.
+
+There is also a model-free reader that produces the same claim from the schema
+alone and goes through the identical verification, so a server with no model
+available is not stuck. The model is how Raze reads an unfamiliar schema quickly.
+It is not how Raze is allowed to be correct.
+
+**Nothing in the decision path involves a model.** The policy engine is a pure
+function. One test empties `PATH` so `claude` is unreachable and runs every tool
+anyway.
+
+### Proving it was running
+
+Every loop pass writes a row to `raze_heartbeat` with a timestamp, whether or not
+it found anything. Three bugs during this build were diagnosed from reading logs
+and all three diagnoses were wrong, because an absent log line is not evidence: an
+interval that never fires produces exactly the same silence as an interval whose
+work found nothing. The heartbeat is the difference, and it survives the process
+that wrote it.
+
+---
+
+## 7. Run it
+
+**Node 20.19 or newer.** Check first — the suite says so and stops, rather than
+failing six layers in.
+
+```bash
+node --version
+
+git clone https://github.com/LokarajR/Raze.git
+cd Raze
+npm install
+npm run test:offline
+```
+
+`npm install` pulls a real PostgreSQL as an npm package (~108 MB), so there is no
+database to install. MongoDB is different: `mongodb-memory-server` fetches a
+binary from a Mongo CDN on first run, and if that is blocked the MongoDB layer
+prints `SKIP` and says why. Every other layer runs with no network at all.
+
+Allow about 400 MB of disk and a little longer than two minutes on the first run.
+
+Expect **twelve layers, all passing**, on a machine that has never seen a
+credential. Groups that need a Razorpay account report `SKIP` rather than passing
+quietly — a test that cannot run says so instead of counting itself green.
+
+Two layers are worth looking at first:
+
+```
+control        the full probe set against a CORRECT integration → zero findings,
+               and the same probes DO fire on a defective one
+deterministic  every tool run with `claude` unreachable on PATH
+```
+
+No Claude subscription is needed for any of this.
+
+---
+
+## 8. The demo: lose a payment, watch it come back
+
+**This runs entirely on your own machine.** Reconciliation asks Razorpay what it
+recorded rather than waiting to be told, so no webhook, no public address and no
+deployment is needed. The webhook path is the optimisation; reconciliation is the
+guarantee.
+
+You need a Razorpay **Test Mode** key pair (`rzp_test_…`). Raze refuses live keys.
+
+### 1. Start the shop
+
+```bash
+cd storefront
+npm install
+DATABASE_URL=postgres://user:pass@host:5432/postgres \
+RAZORPAY_KEY_ID=rzp_test_xxx \
+RAZORPAY_KEY_SECRET=xxx \
+PORT=4100 node server.js
+```
+
+It creates its own database (`kettle`) on whatever Postgres you point it at, so a
+name as ordinary as `shop_orders` cannot collide with an existing table. It seeds
+140 prior counter sales so the table has a shape; those carry **no gateway id**.
+Every row that has one is a real Razorpay order created against the real API.
+
+Open <http://localhost:4100>.
+
+### 2. Watch it lose a payment
+
+Tick **"customer closes the tab after paying"**, place an order, and complete the
+payment.
+
+The tick does not skip payment. It skips the browser telling the shop afterwards
+— exactly what a closed tab changes and nothing else.
+
+Result: the shop shows `pending`, ₹0.00 received. Razorpay has the money.
+**Nothing will ever fix this.** Wait as long as you like. Leave the order there.
+
+### 3. Connect Raze
+
+```bash
+npm run web
+```
+
+Open <http://localhost:7000> and give it three things: key id, key secret, and the
+shop's database URL. Nothing else is asked.
+
+| Step | What to look at |
+|---|---|
+| `schema` | It has never seen this database. It names the orders table, the Razorpay id column, and which money column is **owed** versus **received**. |
+| `webhook` | Generates the secret, registers the endpoint, subscribes only to events this schema can record, reads it back from Razorpay to confirm. You never open the dashboard. |
+| `backfill` | Asks Razorpay what it recorded and reports what your database never applied. |
+| `watch` | Reports the timestamp of a pass that **finished**, not that a timer was created. |
+
+Running locally there is no public address, so the webhook step says so plainly
+and reconciliation carries the work. That is the intended path here.
+
+### 4. Watch the repair
+
+Within about twenty seconds, refresh the shop. The order is `paid`, received
+equals billed.
+
+Raze asked Razorpay about that order by name, found a captured payment, checked
+the amount against what was owed, wrote the row through the same mapping and
+guards a live delivery would use, then read the row back out of the shop's own
+table before reporting it.
+
+### 5. Watch what it refuses — the half that matters
+
+- **An order nobody paid for.** Place one and dismiss the payment window. It
+  stays `pending` forever. Raze does not invent a payment.
+- **A payment with no order.** Refused with `no-matching-order`.
+- **An amount that disagrees.** Change an order's owed amount before paying it.
+  Refused with `amount-mismatch`, both figures quoted.
+
+### If something misbehaves
+
+- **The dashboard shows no payment but you paid.** That is the list lag from
+  §4. Do not pay twice — Raze asks per order and sees it immediately.
+- **Postgres will not start.** Run it again; Raze clears its own orphaned
+  Postgres on the next start. If it persists: `RAZE_PG_PORT=55500 npm run
+  test:offline`.
+- **The chat surface will not answer.** It needs Claude Code installed; the
+  engine does not need a model at all. `node bin/raze status` prints the same
+  facts from the command line.
+
+---
+
+## 9. Evidence you can re-run
+
+```bash
+npm test              # twelve layers, replaying real captured deliveries
+npm run chaos         # a worker SIGKILLed mid-transaction, a handler failing its
+                      # first two attempts at every event, forged deliveries in
+                      # the stream, every delivery dropped, the database
+                      # terminated underneath — each payment still lands once
+npm run demo          # unprotected 1/5, protected 5/5, control 5/5 with 0 findings
+```
+
+Three properties of the suite worth naming:
+
+**It replays reality.** The probes replay deliveries Razorpay really sent, and
+read business state **directly from Postgres**. There is no `/test-state`
+endpoint — instrumentation added for a test would be a form of simulation.
+
+**Zero findings on a correct integration is a build-failing test.** The control
+asserts that the probe set reports nothing against a correct implementation *and*
+that the same probes do fire on a defective one. Tooling that cannot stay quiet
+when nothing is wrong is not a measuring instrument.
+
+**No model is reachable.** `test/deterministic.test.js` spawns the MCP server with
+`PATH` emptied.
+
+---
+
+## 10. Why this is not "ask an AI to fix the handler"
 
 |  | A model rewrites your handler | Raze |
 |---|---|---|
 | How it knows what is broken | reads the code and infers | replays real captured deliveries, reads real database state |
 | How you know the fix worked | you trust it | the same probes re-run and have to pass |
-| Payments already lost before today | gone | recovered by reconciliation |
-| Orders that were never paid | invisible | the ledger detects them |
-| After a dependency changes next year | the code rotted, it breaks again | the runtime is unaffected |
-| A second payment gateway | fix it again | the same layer |
+| What happens to a delivery that never arrives | nothing | reconciliation finds it |
+| What it does when unsure | writes something plausible | refuses, names the rule |
+| Whose code changes | yours | none |
 
-Raze does not repair merchant code. It takes it out of the request path — the
-effect is declared and applied inside Raze's own transaction, so there is nothing
-left to throw, hang or half-apply. That was demonstrated against a real published
-integration: their handler was never touched, it was bypassed, and the payment it
-had been losing was recorded correctly.
+And against Razorpay's own agentic integration, which makes integration **fast**:
 
-A patch also cannot undo the past. Reconciliation recovers payments that were
-lost before Raze was ever installed.
+> Fast integration is not enough. The integration should be hardened against the
+> failure patterns we have actually measured — and the merchant's code should not
+> have to change to get them.
 
-## Three mechanisms
+Every protection in §2 exists because of a specific number in §4.
 
-| Mechanism | Question it answers | What it catches |
-|---|---|---|
-| **Protected runtime** | Did we process this event correctly? | Duplicates, forged signatures, out-of-order events, timeout-induced retries |
-| **Reconciliation** | Did Razorpay record something we don't know about? | Lost or undelivered webhooks |
-| **Expectation Ledger** | Was something supposed to happen that didn't? | Absence — no payment exists to reconcile against |
+---
 
-The third is the one a payments API cannot answer on its own. Reconciliation asks
-"what did Razorpay record?" If the customer never paid, there is nothing to
-enumerate and no amount of scanning will surface it. Only a deadline detects
-absence.
+## 11. Honest limitations
 
-## What is guaranteed, precisely
+- **Test Mode only.** Raze fires real deliveries when it checks an integration
+  and refuses to touch a live account.
+- **Razorpay's account-level webhook API is create-and-list only.** `DELETE` and
+  `PATCH` both answer `404 no Route matched` — those verbs exist only on the
+  partner route, under an account id a merchant using their own keys does not
+  have. Raze can register a webhook but cannot retire a stale one; it reports
+  them rather than pretending.
+- **Postgres and MongoDB.** No other stores.
+- **The fast path needs a public address.** Razorpay refuses `localhost` at save
+  time. Reconciliation needs nothing, which is why §8 works on a laptop.
+- **The model-free schema reader** handles ordinary schemas and declines on odd
+  ones rather than guessing.
+- **`mode-drop` did not measure what it was meant to** — see §5.
 
-**Exactly-once business-state transition within Raze's transactional boundary.**
-The dedupe write and the handler's writes commit in one Postgres transaction, so
-a crash between them rolls back both and the event is retried cleanly. On
-MongoDB, where no transaction spans both stores, the idempotency guard travels
-inside the update instead — see below.
+---
 
-**Eventual recovery from missed delivery**, subject to the Razorpay API being
-reachable and the state mapping being correct. Reconciliation asks Razorpay what
-it recorded rather than trusting what arrived, so a dropped webhook, a disabled
-endpoint, or an endpoint that never existed all recover the same way.
-
-**At-least-once with idempotent delivery for external effects.** Email, shipping
-and messaging cannot join a database transaction. They go through an outbox with
-idempotency keys, and that is a weaker promise stated as such.
-
-Three things stay honest because saying them makes the rest credible:
-
-- **A wrong mapping is executed faithfully.** Raze guarantees your intent, not
-  that your intent is right.
-- **Recovery cannot outrun an unavailable API.** If Razorpay is unreachable,
-  recovery waits. It does not lose.
-- **Nothing here promises there will be no failures.** It promises that a failed
-  delivery is recorded and recoverable rather than acknowledged and lost.
-
-## Nothing is simulated
-
-Every webhook Raze processes arrived over the network from Razorpay, or is a
-byte-exact replay of one that did. Every reconciliation queries the real Razorpay
-API. There is no mock server, no hand-authored payload, no fabricated timestamp.
-
-The fixture corpus is 796 real deliveries captured during a three-day measurement
-of Razorpay's actual retry behaviour — see `measurement/RESULTS.md`. Signature
-verification is on throughout, which is what proves the bytes are authentic: a
-constructed payload cannot produce a valid HMAC.
-
-Two things are deliberately constructed, and both say so in their output:
-
-- the tampered-signature probe replaces the signature header — that *is* the probe
-- reconciliation reconstructs events from real API responses, marked
-  `source='reconcile'` with a `recon_` event id, so a repaired event can never be
-  mistaken for a delivered one
-
-The `--sever-delivery` demo severs **Raze's own intake**. Razorpay delivery is
-unaffected. It is never described as Razorpay disabling the endpoint — that is a
-different behaviour, which the measurement observed separately.
-
-## The measurement this is built on
-
-Razorpay's documentation says retries happen "on an exponential backoff schedule
-over 24 hours" and never publishes the schedule. Four runs against a live probe
-recorded it. **796 deliveries, one continuous server process, zero restarts,
-signatures verified on every one.** The corpus ships in `measurement/` and is what
-every probe replays.
-
-### The four runs
-
-| Run | First delivery (UTC) | Last delivery (UTC) | Deliveries | Events | Purpose |
-|---|---|---|---|---|---|
-| **1** | `2026-08-27T14:03:39.686Z` | `2026-08-28T12:50:45.077Z` | 189 | 3 | Baseline. Payment lifecycle only. |
-| **2** | `2026-08-28T13:30:03.195Z` | `2026-08-29T12:24:08.296Z` | 311 | 5 | Reproduction, plus refunds and failures |
-| **3** | `2026-08-29T04:00:07.953Z` | `2026-08-29T09:45:09.550Z` | 271 | 5 | Morning slot — tests time-of-day dependence |
-| **4** | `2026-08-29T12:35:08.864Z` | `2026-08-29T12:38:19.508Z` | 25 | 1 | Fourth `payment.failed` sample |
-
-Run 3 closed on **exactly the same 231-delivery count** as Run 2, with a per-mode
-table identical in every cell but one. The schedule is deterministic, not jittered,
-and shows no time-of-day dependence.
-
-### One retry ladder, end to end
-
-Run 1, `mode-500`, `payment.captured`, event `TUouniJth9WtQ2`. Every row is a real
-HTTP request that arrived from Razorpay's infrastructure:
-
-| # | Arrived (UTC) | Since first | Gap from previous |
-|---:|---|---:|---:|
-| 0 | `2026-08-27T14:03:40.378Z` | 0.00s | — |
-| 1 | `2026-08-27T14:03:40.612Z` | **0.23s** | 0.23s |
-| 2 | `2026-08-27T14:03:46.457Z` | 6.08s | 5.84s |
-| 3 | `2026-08-27T14:03:59.506Z` | 19.13s | 13.05s |
-| 4 | `2026-08-27T14:04:19.924Z` | 39.55s | 20.42s |
-| 5 | `2026-08-27T14:05:02.671Z` | 1.37m | 42.75s |
-| 6 | `2026-08-27T14:06:24.890Z` | 2.74m | 82.22s |
-| 7 | `2026-08-27T14:09:06.432Z` | 5.43m | 161.54s |
-| 8 | `2026-08-27T14:14:30.872Z` | 10.84m | 324.44s |
-| 9 | `2026-08-27T14:25:13.788Z` | 21.56m | 642.92s |
-| 10 | `2026-08-27T14:46:36.878Z` | 42.94m | 1283.09s |
-| 11 | `2026-08-27T15:29:20.262Z` | 1.43h | 2563.38s |
-| 12 | `2026-08-27T16:54:47.624Z` | 2.85h | 5127.36s |
-| 13 | `2026-08-27T19:45:28.435Z` | 5.70h | 10240.81s |
-| 14 | `2026-08-28T01:26:48.945Z` | 11.39h | 20480.51s |
-| 15 | `2026-08-28T12:49:33.389Z` | **22.76h** | 40964.44s |
-| — | *never arrived* | *45.5h* | **ladder ended** |
-
-Sixteen deliveries. Fourteen doublings, ratio 2.00 from the fifth gap onward. The
-predicted seventeenth attempt at +45.5h never came, and was 45 minutes overdue on a
-schedule that had held to ±5 seconds across every prior step.
-
-**The stopping rule is the window, not an attempt count.** Doubling continues until
-the next step would fall outside 24 hours, then stops. 22.76h is simply where the
-fourteenth doubling lands before that cap.
-
-Two runs a day apart agreed on the 11.4-hour step to within **five seconds** — a
-0.01% divergence. This schedule is not merely unjittered; it is clocked.
-
-### What each finding forces in the code
-
-| Finding | Consequence in Raze |
-|---|---|
-| First retry at **0.23s** for payment events | The runtime answers 200 *before* processing. A synchronous handler is guaranteed a duplicate. |
-| **16 deliveries** over **22.76h**, 14 doublings | The retry-storm case is real, not hypothetical. |
-| Undelivered after 22.8h is **never delivered** | Waiting is not a recovery strategy. Reconciliation is mandatory. |
-| Sustained failure **disables the endpoint entirely** | Delivery never resumes without human action, so a deadline is the only remaining signal. |
-| Refunds and failures skip the instant retry, **~6–9s** | Refund handling cannot be tuned to payment timing. |
-
-The endpoint deactivation was observed directly: at `2026-08-29T12:08Z` Razorpay
-disabled all four failing probe endpoints within 40 seconds of each other and
-emailed a notice for each. Two of them still received a delivery ~14 minutes after
-their stated "final attempt".
-
-Full write-up, including three claims that were published and later overturned by
-more data: `measurement/RESULTS.md`.
-
-## The five probes
-
-`raze audit` replays real captured deliveries and reads business state **directly
-from Postgres**. There is no `/test-state` endpoint — instrumentation added for a
-test would be a form of simulation.
-
-| Probe | Assertion |
-|---|---|
-| Duplicate delivery | One event → exactly one business-state transition |
-| Tampered signature | Rejected with non-2xx, zero state change |
-| Out-of-order events | Final state valid, no regression |
-| Timeout-induced retry | Same final state as a single delivery |
-| Refund event | Correct state mutation |
-
-**The control case is mandatory.** Auditing a correct integration must produce
-zero findings, every time, and the test suite asserts exactly that. A detector
-that fires on correct code is worse than no detector.
-
-## Use Raze as an agent
-
-Razorpay's Agentic Integration ends when the merchant's code is written. Raze
-begins when that code is running and reality stops cooperating.
+## 12. Commands and layout
 
 ```bash
-git clone https://github.com/LokarajR/Raze.git
-cd Raze && npm install
-cp .env.example .env        # your Razorpay Test Mode keys, your DATABASE_URL
-node bin/raze agent
+node bin/raze status      # reconciliation state, ledger, inbox, outbox — no model
+node bin/raze up          # migrate, map, register, backfill, start watching
+node bin/raze web         # the console
+node bin/raze audit       # replay the probe set against an integration
+node bin/raze agent       # write .mcp.json so an MCP client can drive it
 ```
 
-`raze agent` checks the database is reachable, checks Razorpay accepts the keys,
-and writes `.mcp.json`. It refuses to write anything if either check fails — a
-config that looks right and does not work costs more than no config. The file is
-gitignored because it holds the merchant's credentials.
-
-Restart Claude Code in that directory and ask:
-
 ```
-is everything alright?
-```
-
-It runs on a Claude Pro subscription. The server is spawned locally over stdio,
-so there is no API key and no hosted endpoint. For Claude Desktop, copy the
-`mcpServers` block from `.mcp.json` into its config instead.
-
-### What it connects to, and what it does not
-
-Raze needs two things, and neither of them is the merchant's source code:
-
-| It needs | Why |
-|---|---|
-| `DATABASE_URL` | The question is whether *their* order state is correct. That lives in their database. |
-| Razorpay Test Mode keys | To ask Razorpay what it actually recorded, which is the comparison everything rests on. |
-
-It reads their schema and works out which table holds orders and which column
-carries the Razorpay order id. It does not read, modify or deploy their
-application. There is no SDK to install and no handler to rewrite.
-
-### What "takes over" honestly means
-
-Three different things, and they are worth telling apart:
-
-**Watching** happens with no change to the merchant's code at all. Raze
-reconciles against Razorpay, watches for orders whose payment never arrives, and
-reports where the two disagree. Their integration keeps running exactly as it is.
-
-**Applying** — where Raze becomes the thing that writes payment state — needs
-their webhook pointed at a Raze endpoint. From then on deliveries land in the
-inbox first: deduplicated on Razorpay's event id, ordered by a state machine, and
-applied to their table through a declarative mapping inside one transaction. Their
-handler can be deleted or left in place; the mapping does not need it.
-
-**Repairing** is always a delivery, never an UPDATE. An approved recovery
-synthesizes the event Razorpay would have sent and puts it through the same
-worker as live traffic — one event identity per payment, shared with
-reconciliation, so neither path can credit the same money twice.
-
-What it does not do: touch live-mode money, change anything without an approved
-plan, or claim to have prevented a failure it only detected.
-
-## Raze as an MCP server
-
-```bash
-npm run mcp           # or: node bin/raze-mcp
+src/runtime/     inbox, dedupe, ordering, acknowledgement
+src/policy/      the pure decision function — every rule fails toward escalation
+src/loops/       reconcile, targeted poll, sweep
+src/mapping/     event → merchant state, validated against the live schema
+src/reconcile/   ask Razorpay what it recorded
+src/ledger/      expectations and deadlines — detecting absence
+src/outbox/      effects, delivered once
+src/agent/       schema reading (model and model-free), integration building
+src/mcp/         the MCP server
+src/web/         the console
+storefront/      the shop that loses the payment
+measurement/     796 real deliveries, and the analysis
+test/            twelve layers
 ```
 
-It speaks JSON-RPC on stdout, so it is run by an MCP client rather than by you.
-Running it in a terminal and seeing nothing is correct.
-
-Add it to Claude Code, Cursor, Windsurf or Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "raze": {
-      "command": "node",
-      "args": ["/absolute/path/to/raze/bin/raze-mcp"],
-      "env": {
-        "DATABASE_URL": "postgres://...",
-        "RAZORPAY_KEY_ID": "rzp_test_...",
-        "RAZORPAY_KEY_SECRET": "...",
-        "RAZE_ORDERS_TABLE": "shop_orders"
-      }
-    }
-  }
-}
-```
-
-### Why this is not another payment MCP
-
-Every published payment MCP — Razorpay's own, Stripe's, Square's, PayPal's,
-Dwolla's, and the community ones — is provider access. Create an order, fetch a
-payment, issue a refund, list webhook subscriptions. They answer *what does the
-provider say*.
-
-None of them answer the question a merchant actually loses money on:
-
-> This event was delivered twice after our process crashed. Does exactly one
-> entitlement, one invoice, one ledger posting exist in **our** database?
-
-Answering that needs an engine rather than an API wrapper: a durable inbox, a
-uniqueness constraint on provider event identity, a state machine that refuses
-illegal transitions, an outbox for side effects, reconciliation against provider
-truth. Raze has those and they are tested; the MCP server is the interface to
-them, not a reimplementation.
-
-| | provider MCPs | Raze MCP |
-|---|---|---|
-| Create orders, payments, refunds | yes | no — use theirs |
-| List and configure webhook subscriptions | yes | no — use theirs |
-| Store the raw delivery before processing | no | yes |
-| Deduplicate on provider event identity | no | yes |
-| Merchant order state machine | no | yes |
-| Detect merchant/provider divergence | partly (settlements) | yes |
-| Repair merchant state | no | yes, behind approval |
-| Separate "never paid" from "we lost it" | no | yes |
-
-### Reads are free; writes are not
-
-Eight of the nine tools are read-only. `raze_apply_recovery` is the only one
-that changes merchant state, and it cannot be called on its own: a plan comes
-from `raze_propose_recovery`, and the plan is bound by a fingerprint to the exact
-state it was derived from. If anything moves between proposing and approving —
-including the payment being applied by someone else — the approval is refused
-rather than honoured against a world that no longer exists.
-
-An approval token is single-use, expires in ten minutes, and lives only in
-memory. A token that survived a restart would be a standing authorisation to
-move money, which is not what an approval is.
-
-```
-raze_explain_order        the full trail for one order, from three
-                          independent sources, reporting their disagreement
-raze_event_trail          deliveries as durably recorded, before processing
-raze_audit_endpoint       five real captured deliveries fired at a live endpoint
-raze_find_divergence      settled at Razorpay, never applied by the merchant
-raze_simulate_recovery    what recovery would do; writes nothing
-raze_propose_recovery     a plan and an approval token; writes nothing
-raze_apply_recovery       the only tool that writes, and only with approval
-raze_sweep_expectations   recovered / failed / abandoned, told apart
-```
-
-## The console
-
-```bash
-npm run web            # http://127.0.0.1:7000
-```
-
-A terminal transcript is not a demonstration. The console is the same engine —
-the same five probes, the same runtime, the same reconciler — behind a page you
-can point at a merchant and watch.
-
-It runs in five stages, in the order a merchant actually experiences them:
-
-1. **The merchant.** Paste a GitHub URL. Raze clones it, finds the code that
-   receives Razorpay webhooks, and shows the defects against the real source,
-   with the line and the excerpt.
-2. **What happens without Raze.** A merchant is started for real, with its own
-   database. The probes fire genuine captured Razorpay deliveries at it and the
-   result is read back out of the merchant's own table.
-3. **What it costs.** Money, derived from what just happened. Every figure names
-   where it came from.
-4. **The same code, behind Raze.** The handler is not modified. Identical probes.
-5. **Live Razorpay.** Create a real Test Mode payment link, pay it, and watch the
-   delivery arrive. Then sever delivery entirely and let reconciliation recover
-   the payment by asking Razorpay what it recorded.
-
-When it is deployed, this process is the endpoint you register in the Razorpay
-dashboard. Deliveries that arrive are genuine Razorpay POSTs; the console records
-each one byte-for-byte and forwards it unchanged — raw bytes and all headers,
-because the signature is computed over exactly those bytes.
-
-```bash
-docker build -t raze . && docker run -p 8080:8080   -e DATABASE_URL=... -e RAZORPAY_KEY_ID=... -e RAZORPAY_KEY_SECRET=...   -e RAZORPAY_WEBHOOK_SECRET=... raze
-```
-
-### What the money figures are, and are not
-
-Two rules cost the console its headline numbers and are worth stating plainly.
-
-**An order nobody paid for is not a loss.** The Expectation Ledger separates
-*abandoned* from *failed to record*, and only the second is money. Counting
-abandonment as lost revenue would inflate the case.
-
-**The projection is not derived from the probes.** Four of five probe categories
-failing does not mean four in five payments lose money — they are categories of
-defect, not a sample of traffic. Nor does it use the corpus retry rate: 80% of
-events in the 796-delivery measurement received more than one delivery, but that
-is a property of the experiment, which deliberately failed deliveries so the
-retry ladder could be measured. It records what Razorpay does when a delivery
-fails, not how often failure happens.
-
-So the number that decides the size of the loss — how often delivery to this
-merchant fails — is asked for, not assumed, and there is no projection until it
-is supplied. Raze measures the real rate from the merchant's own traffic once it
-is running.
-
-## Commands
-
-### Everything at once
-
-```
-raze up [--url URL] [--orders TABLE --key COLUMN]
-                            migrate, derive mappings, register the webhook, arm
-                            expectations, backfill history, then run. --dry-run
-                            shows every action and changes nothing.
-```
-
-### Or step by step
-
-```
-raze setup --url URL        schema, mapping, secret, webhook registration
-raze infer [--out FILE]     read your schema, propose the mapping, nothing else
-raze backfill --from DATE   reconcile history, so installing today does not
-                            leave yesterday invisible. Safe to rerun.
-raze protect                runtime + ledger + reconciliation
-raze watch --table T --key C
-                            arm expectations from your orders table
-raze gate                   run the reconciliation gate, record the outcome
-raze init                   migrations and configuration check
-```
-
-### Looking at it
-
-```
-raze status                 protection state and reconciliation health
-raze insights               what Raze has learned from your own traffic
-raze audit [--target ...]   five probes against real captured deliveries
-                            it. Deterministic, offline, no model.
-raze reconcile              one reconciliation pass now
-raze ledger [--sweep]       expectations; --sweep classifies the overdue ones
-raze demo [--sever-delivery]
-raze fix [--file PATH]      repair a handler in place (the only command that
-                            generates code; --restore undoes it)
-raze explain <finding>      explanation of a confirmed finding
-```
-
-**Everything except `fix` and `explain` is deterministic and needs no model.**
-
-## What keeps it true when things break
-
-The mechanisms are only worth what they do under failure, so each is written to
-fail in the direction that can be recovered from.
-
-| | |
-|---|---|
-| A failing event | Retries with exponential backoff, then **stops at 16 attempts** — the number Razorpay itself gives up at — and is marked `needs_attention`. Never deleted, never marked processed, so it can be replayed once the cause is fixed. Retrying forever makes a blocked queue look busy. |
-| Reconciliation | Only a fully covered window advances the watermark. `status` reports *never run*, *never completed*, *stale* or *covered* — **"found nothing" and "never ran" cannot be confused**, which is the more dangerous of the two. |
-| Refunds | Reconciled alongside payments. A merchant who supplies no refund view is told refunds are **unchecked**, never clean. |
-| Drift | Measured against payments actually **applied**, never against an order row existing. An order row is written at checkout before any money moves, so treating existence as knowledge lets every unpaid order mask its own missing payment. |
-| External effects | An outbox with backoff, a delivery cap, and idempotency keys. An effect with no registered sender says so rather than retrying into the ground. |
-| Expectation deadlines | Derived from the p99 of your own fulfilments, and only once there are enough of them. Fifteen minutes is a guess, and a guessed deadline produces false abandonments. |
-| A database blip | The pool logs and reconnects. The process guaranteeing nothing is lost must not die because a connection dropped. |
-
-## Two ways to write the merchant side
-
-### Declare it — no handler at all
-
-The merchant says what an event means for their data. Raze compiles it to
-parameterised SQL and runs it inside the same transaction as the dedupe write.
-
-```js
-rz.map('payment.captured', {
-  table: 'orders',
-  key:   { column: 'order_id', from: 'payload.payment.entity.order_id' },
-  set:   { status: { literal: 'paid' } },
-  add:   { credited_paise: 'payload.payment.entity.amount' },
-  guard: { column: 'status', notIn: ['refunded'] },
-});
-```
-
-No route, no signature check, no dedupe, no ordering logic, no transaction
-handling, no error path. There is no merchant function in the request path, so
-there is nothing to throw, hang, forget to respond, or half-apply.
-
-Every identifier is validated against the database catalogue at registration, not
-at delivery time — a webhook arriving at 3am is the wrong moment to discover a
-typo. Values are always bound parameters.
-
-`raze infer` writes this file for you by reading your schema. It proposes and
-never applies: it can see that a column named `order_id` holds a Razorpay order
-id, but not whether a refund should reverse a balance. Anything requiring that
-judgement is emitted as a QUESTION.
-
-### MongoDB
-
-Same idea, different store:
-
-```js
-rz.map('payment.captured', {
-  collection: 'orders',
-  key:   { field: 'razorpay_order_id', from: 'payload.payment.entity.order_id' },
-  set:   { payment_status: { literal: 'paid' } },
-  inc:   { amount_paise: 'payload.payment.entity.amount' },
-  guard: { field: 'payment_status', notIn: ['refunded'] },
-});
-```
-
-**The guarantee here is different and the difference is not hidden.** With
-Postgres, Raze's dedupe write and the business write commit in one transaction.
-That is impossible across two stores, so the idempotency guard travels inside the
-update instead: each document records the event ids applied to it, and the filter
-requires the incoming one to be absent. MongoDB applies a single-document update
-atomically, so a retry matches nothing and does nothing — including after a crash
-between the Mongo write and the inbox update.
-
-What is genuinely lost: your own additional writes cannot join Raze's
-transaction, so you must make those idempotent yourself.
-
-Inference is also weaker here and says so. Postgres declares every column; Mongo
-declares nothing, so the shape is sampled from documents that exist and a field
-seen in 3 of 200 is reported with that ratio attached.
-
-### Or keep your handler
-
-```js
-rz.on('payment.captured', async (event, tx, meta) => {
-  // Business logic only. Dedupe, signature and ordering already handled.
-  // meta carries the delivery as it arrived: event id, headers, raw body.
-  await tx.query('UPDATE orders SET status = $1 WHERE id = $2',
-    ['paid', event.payload.payment.entity.order_id]);
-});
-```
-
-## What Raze learns while it runs
-
-The retry ladder was not read from documentation, it was measured. `raze insights`
-applies the same method continuously to your own traffic.
-
-| Learned from | Used for |
-|---|---|
-| Every delivery's arrival, per event type | your account's real first-retry delay, flagged when it diverges from the measured baseline |
-| Every handler run | p50/p95/p99 latency and failure rate, with the most common error named |
-| Resolved expectations | the p99 of real fulfilments — which is what a deadline should be. Fifteen minutes is a guess. |
-| Reconciliation runs | how often delivery misses something |
-
-Statistics, not a model. Every question here has an exact answer available from
-the record, and a recommendation you can act on ("p99 of 4,312 observations")
-beats an inference you cannot inspect.
-
-Two rules the tests enforce: **every figure carries its sample count**, and below
-twenty observations it reports insufficient data instead of a finding. And an
-observation that cannot be written is swallowed — diagnostics must never break a
-payment.
-
-It does not promise there will be no failures. Nothing can. It notices a handler
-drifting toward the latency that earns duplicate deliveries, an account whose
-retry timing has changed, or reconciliation that keeps finding drift, before
-those become incidents.
-
-## Proof against code we did not write
-
-```
-npm run live:public   drive two of them with the real ladder
-npm run demo:public   one of them losing a payment, then not
-```
-
-Ten public repositories, each written by someone else for their own purpose, none
-aware this project exists. Cloned at run time and never vendored — most carry no
-licence, so their code is fetched like a fixture and none of it is redistributed.
-
-```
-repositories examined            10
-with a webhook handler            6
-no handler at all                 4
-handler matched >=1 defect        3
-
-3 / 6   no dedupe on the event id, with writes unsafe to repeat
-2 / 6   signature verified over re-serialised JSON
-1 / 6   Model.update(), removed in Mongoose 7
-1 / 6   responses only inside one event-type branch
-1 / 6   request data in a module-level variable
-```
-
-The four with no webhook handler are their own finding: they verify the browser
-callback and stop, so a customer closing the tab after paying leaves the merchant
-never knowing. No retry handling addresses that — only a deadline does.
-
-### One of them, run live
-
-`neharahman/razorpay-webhook`, unmodified, against the genuine 16-delivery ladder:
-
-```
-as published            16 deliveries, all answered 200, nothing written.
-                        Model.update() was removed in modern mongoose, so their
-                        handler throws, catches its own exception and answers
-                        res.send(err) — which Express sends as 200. Razorpay
-                        reads a success, stops retrying, and the payment is gone
-                        with nothing in their logs to say so.
-
-behind Raze             1 event, handler invoked 3 times with backoff, the real
-                        error surfaced, the event still held. Still lost, though:
-                        holding a broken handler's event is not recording the
-                        payment.
-
-Raze owning execution   handler invoked 0 times, and the payment recorded:
-                        flag=true amount=100 receipt=pay_TUouivTMBk4OY6
-```
-
-The third pass is the point. Their code is not repaired — it is taken out of the
-request path, and the effect is applied by Raze inside its own transaction. The
-mapping was read off their own handler: set amount, receipt, created_at and flag
-on the row keyed by order id, only when flag is not already set. **Their intent
-without their bug.**
-
-Raze does not claim anything from reading code. Every finding in this project comes from a delivery that was actually sent and a database row that was actually read afterwards — behaviour, not shape.
-
-## Tests
-
-```
-npm test              95 assertions across ten layers
-npm run test:offline  the layers that need no network
-npm run chaos         the guarantee under kills, drops and forgeries
-```
-
-| Layer | Covers |
-|---|---|
-| 1 | runtime: dedupe, signature, ordering, rollback, backoff, raw-body fidelity |
-| 2 | ledger: recovered / failed / abandoned, on three real Razorpay subjects |
-| 3 | reconciliation: live API, drift detection, idempotent repair |
-| 4 | audit: broken caught, control clean and stable, protected passes |
-| 5 | declarative mappings with no merchant handler |
-| 6 | learning, sample-count discipline, never breaking a payment |
-| 7 | MongoDB mappings and inference |
-| 8 | known defect patterns, and both controls staying clean |
-| 9 | refund reconciliation, escalation, liveness, outbox |
-| 10 | **chaos** |
-
-### The chaos layer
-
-```
-a worker SIGKILLed mid-transaction    every payment applied exactly once
-a handler failing its first 2 tries   6 of 9 calls refused, still exactly once
-forged deliveries in the same stream  all rejected before the handler
-every delivery dropped                reconciliation recovers the payments
-reconciling twice                     nothing double-applied
-the database terminated underneath    the pool reconnects rather than dying
-```
-
-The kills are real. A child worker runs against the real database with a
-deliberately slow write, so the kill lands *inside* a transaction rather than
-between two, and is then SIGKILLed — not asked to stop, not made to throw.
-Throwing exercises the error path; only a kill exercises the crash path, where
-nothing gets to clean up and Postgres rolls back a transaction the process still
-believed was open.
-
-The disorder is seeded and the seed is printed, so any failure reproduces
-exactly: `node test/layer10.test.js <seed>`.
-
-Layers 2 and 3 call the live Razorpay API. Layer 2 creates a real order and
-deliberately never pays it — the abandonment case cannot be faked without losing
-the point.
-
-## Running this on a machine that has never seen it
-
-Everything below needs **Node 22+ and git**. Nothing else — no Postgres, no
-Docker, no API key, no model.
-
-```bash
-cd ~                       # or anywhere you own — see the warning below
-git clone https://github.com/LokarajR/Raze.git
-cd Raze
-npm install
-```
-
-> **Do not clone into a system directory.** PowerShell opened as Administrator
-> starts in `C:\Windows\System32`, and cloning there gives a tree nothing can
-> write to — the embedded PostgreSQL fails with
-> `could not create directory ... Permission denied`. Clone into your home
-> directory or Documents, and there is no need to run as Administrator.
-
-
-`npm install` downloads a real PostgreSQL and a real MongoDB as npm packages, so
-there is no database to set up. They start on demand under `.pgdata/` and stop
-with the process.
-
-### Step 1 — prove it works, offline
-
-```bash
-npm run test:offline
-```
-
-90 assertions across ten layers with no credentials, 110 with: the runtime, the
-audit probes, the declarative mappings, the learning discipline, the unattended
-repair policy, and the control that proves the probes find nothing on correct
-code. No model is involved in any of it.
-
-The bundled deliveries in `measurement/` are real captured bytes, but the secret
-they were signed under is not in this repository and never will be. Rather than
-switch signature verification off — the one check Layer 1 exists to make — the
-suite re-signs those same bytes with a test secret when it finds no credentials,
-and says which mode it ran in:
-
-```
-signatures: no credentials on this machine — the same captured bytes,
-            re-signed with a test secret. Verification is still real.
-```
-
-The HMAC path, the raw-byte handling and the rejection of forged and truncated
-bodies are exercised either way. The single claim that needs the real secret is
-that these exact bytes came from Razorpay, which is a fact about the corpus, not
-a code path in Raze. With `RAZORPAY_WEBHOOK_SECRET` set, the captured signatures
-are used as-is and that claim is tested too.
-
-```bash
-npm run chaos
-```
-
-The guarantee under a worker SIGKILLed mid-transaction, forged deliveries, a
-failing handler and the database terminated underneath.
-
-Five of its seven cases run offline. The two that prove recovery from dropped
-deliveries need Razorpay credentials — asking Razorpay what it recorded is the
-whole point of those cases and cannot be stubbed without destroying their
-meaning. Without credentials they are reported as skipped, never as passed.
-
-### Step 2 — see a real integration fail, then not
-
-```bash
-npm run demo            # broken merchant vs the same code protected
-```
-
-Both replay real captured Razorpay deliveries from `measurement/`. No account
-needed.
-
-### Step 3 — with a Razorpay Test Mode account
-
-```bash
-cp .env.example .env    # add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET
-npm test                # all 95 assertions, including the live API layers
-```
-
-Then point Raze at a database of your own:
-
-```bash
-npx raze up --orders <your_orders_table> --key <your_order_id_column> --dry-run
-```
-
-`--dry-run` prints every action and changes nothing. Drop it to run for real, and
-add `--url https://your-public-host/webhook` to register the webhook too.
-
-### What needs what
-
-| | Node + git | Razorpay Test keys | public HTTPS URL | a model |
-|---|:-:|:-:|:-:|:-:|
-| `npm run test:offline`, `npm run chaos` | yes | — | — | — |
-| `npm run demo` | yes | — | — | — |
-| `raze up`, `reconcile`, `ledger`, `backfill` | yes | **yes** | — | — |
-| deliveries arriving in 0.23s instead of on the reconcile interval | yes | yes | **yes** | — |
-| `raze fix` (appendix, optional) | yes | — | — | **yes** |
-
-Without a public URL nothing is lost — reconciliation still recovers every
-payment, it just arrives on the reconcile interval rather than in 0.23 seconds.
-
-### If something goes wrong
-
-**`could not create directory ... Permission denied`** — the repository is
-somewhere your user cannot write, usually `C:\Windows\System32` from an elevated
-PowerShell. Move it: `cd ~; git clone ...` and run again. Administrator is never
-needed.
-
-**`pre-existing shared memory block is still in use`** — an interrupted run left
-a Postgres child alive holding the shared memory segment. Raze now clears this
-itself on the next start, and only ever stops Postgres processes launched from
-this checkout's own `node_modules` — a system Postgres, or another checkout's, is
-never touched. If you see this message at all, run the command again.
-
-**Two checkouts on one machine** — the embedded server takes the first free port
-from 55432 rather than a fixed one, so a second clone does not collide with the
-first. `RAZE_PG_PORT=55500` pins it if you would rather choose.
-
-**Port already in use** — `DEMO_PORT=4500 npm run demo`, or `raze up --port 4500`.
-
-**Prefer your own Postgres** — set `DATABASE_URL` and the embedded server is not
-started at all. `docker compose up -d` brings one up.
-
-## Two modes
-
-**Demo mode** — works immediately against the bundled merchant and the captured
-delivery corpus. No Razorpay account, no network.
-
-**Real mode** — supply your own Test Mode keys, deploy the webhook endpoint
-publicly, configure the webhook in your own dashboard, create real payments.
-
-> Clone the repository, connect a Razorpay Test Mode account, configure a public
-> webhook endpoint, and Raze runs the same protection and reconciliation workflow
-> against real Razorpay transactions.
-
-Webhooks require a publicly reachable URL on port 443 — localhost is rejected at
-save time. Railway, Render and Fly.io all work; see `DEPLOY.md`. Avoid ngrok for
-a live demo: a tunnel dropping mid-pitch is indistinguishable from the product
-failing.
-
-## Layout
-
-```
-raze/
-├── bin/raze                    CLI
-├── src/
-│   ├── runtime/                Layer 1 — protected runtime
-│   ├── reconcile/              Layer 3 — reconciliation, payments and refunds
-│   ├── ledger/                 Layer 2 — expectation ledger
-│   ├── audit/                  Layer 4 — the five probes
-│   ├── mapping/                declarative mappings, Postgres
-│   ├── mongo/                  declarative mappings and inference, MongoDB
-│   ├── infer/                  read a schema, propose a mapping
-│   ├── patterns/               known defect shapes, recognised without a model
-│   ├── learn/                  observe, then compute over what was observed
-│   ├── outbox/                 effects that cannot join the transaction
-│   ├── agent/                  repair agent: providers, extraction, local models
-│   ├── up-command.js           everything in one run
-│   ├── db.js                   Postgres, embedded or DATABASE_URL
-│   └── demo.js                 scripted demonstration
-├── migrations/
-├── examples/
-│   ├── demo-merchant/          one codebase, three integrations
-│   ├── merchant-legacy/        an ordinary handler, the repair agent's target
-│   └── public-merchant/        real published integrations, cloned at run time
-├── gate/                       the §1 gate and its recorded results
-├── test/                       layer1..layer10, plus the public evaluations
-└── measurement/                the 796-delivery study this is built on
-```
-
-## Honest limitations
-
-- **A wrong mapping is executed faithfully.** Raze guarantees your intent, not
-  that your intent is correct. Anything requiring a judgement is emitted as a
-  question rather than decided.
-- **External effects are at-least-once.** Email and shipping cannot join a
-  database transaction. The outbox makes them idempotent, not exactly-once.
-- **Recovery is eventual and bounded by the Razorpay API.** If their API is
-  unreachable, recovery waits. It does not lose.
-- **MongoDB has no shared transaction with the inbox.** The idempotency guard is
-  inside the update instead, which is sound for Raze's own writes and does not
-  extend to yours.
-- **Inference proposes, never applies, and asks where it cannot tell.** It finds
-  the key by reading the column's contents when its name gives nothing away, but
-  it cannot tell a status column from a money column on a schema whose names are
-  the author's own. It declines rather than guessing, and the merchant states
-  those columns instead — validated against the live schema before anything is
-  armed. A wrong guess about which row is marked paid moves real money.
-- **The expected-amount column is never inferred.** Two integer columns look
-  identical from outside, and writing to the one the payment is checked against
-  destroys the check. Without that column Raze reports divergence and repairs
-  nothing.
-- **`raze fix` is not reliable.** Three runs against the same file: two full
-  repairs, one patch that broke the merchant outright. It is a demonstration, and
-  the verifier is what makes it safe to run at all.
-- **A local model does not finish the job.** A 7B fixed two of five defects and
-  stopped. Use the Claude Code CLI provider if you want it completed.
-- **`raze watch` polls.** An order created and paid inside one interval is armed
-  late. Calling `rz.expect()` in your own transaction is stronger.
-- **`raze setup` and `raze up` have registered a webhook only in `--dry-run`.**
-  The registration path against a live account is written and unverified.
-- **`raze audit` measures the integration in front of it.** It says nothing about
-  code paths no probe exercises.
-- **Running without a webhook secret accepts forged deliveries**, because nothing
-  can distinguish them. The runtime now refuses to start in that state unless
-  `allowUnsigned: true` is passed explicitly — an endpoint that looks healthy
-  while accepting anything is worse than one that will not start.
-
-## Appendix: the repair agent
-
-**Optional, and deliberately not part of the pitch.** Everything above works with
-no model, no API key and no network. This one command does not, and it is the
-weakest thing in the repository — two of three runs against the same file
-produced a full repair, the third produced a patch that broke the merchant
-outright.
-
-It is kept because the verification loop around it is interesting, not because
-repairing merchant code is how Raze works. Raze does not need to fix a handler:
-it takes the handler out of the request path. That is what the declarative
-mappings do, deterministically, and it is what `raze up` uses by default.
-
-If you are asking "why not just ask an AI to fix the code" — that is the right
-question, and the answer is in [The guarantee](#the-guarantee). A model reads code
-and infers; Raze replays real captured deliveries and reads real database state.
-A patch cannot recover a payment that was already lost last week. Reconciliation
-can.
-
-
-`raze fix` reads a merchant's real source, gets real findings from the probes,
-generates a patch, applies it, restarts the service, and re-runs the probes to
-prove the patch worked.
-
-```
-raze fix                     repair examples/merchant-legacy in place
-raze fix --file path/to.js   repair your own handler
-raze fix --restore           put the original back
-```
-
-### The division of labour is the whole design
-
-| | Who decides | How |
-|---|---|---|
-| What is broken | **the probes** | deterministic, reading business state from Postgres |
-| The patch | the model | written at run time from the real source and the observed failures |
-| Whether it is fixed | **the probes** | the same probes, re-run against the restarted service |
-
-The model never discovers a problem, never decides whether something counts as a
-finding, and never declares success. **A patch that does not make the probes pass
-is a failed patch** — the agent restores the original file and reports failure.
-There is no fix database, no template, and no canned diff.
-
-Two guards sit between the model and your code: the reply is only accepted if it
-parses under `node --check`, and only if it keeps the file's exports and shape.
-
-### A real run
-
-`examples/merchant-legacy/server.js` is an ordinary handler — it parses correctly,
-uses transactions, returns sensible status codes. It is not a strawman. Against
-real replayed Razorpay traffic it fails every probe:
-
-```
-BEFORE
-  FIND  Duplicate delivery       credit_count=2, credited=200 paise
-  FIND  Refund event             status=paid, credited=100 paise (was 100)
-  FIND  Tampered signature       ACCEPTED — credited 100 paise on a forged signature
-  FIND  Out-of-order delivery    final status=authorized
-  FIND  Timeout-induced retry    single delivery credited 100, with retries credited 300
-  0/5 pass, 5 finding(s) — UNSAFE TO SHIP
-
-  round 1: generating a patch from the real source and the real findings...
-  round 1: patch applied (5946 bytes). Re-running the probes.
-  round 1: 5 finding(s) -> 0
-
-AFTER
-  ok  Duplicate delivery       credit_count=1, credited=100 paise
-  ok  Refund event             status=refunded, credited=0 paise (was 100)
-  ok  Tampered signature       rejected with HTTP 400
-  ok  Out-of-order delivery    final status=paid
-  ok  Timeout-induced retry    single delivery credited 100, with retries credited 100
-  5/5 PASS
-```
-
-The patch was not a template. Told it could only use tables the file already
-touches, it could not add a dedupe table — so it made the writes idempotent in
-SQL instead:
-
-```sql
-credited_paise = shop_orders.credited_paise + EXCLUDED.credited_paise,
-credit_count   = shop_orders.credit_count + 1
-WHERE shop_orders.credit_count = 0      -- a second delivery matches nothing
-```
-
-and added HMAC verification with `timingSafeEqual`, plus an ordering guard
-(`WHERE status NOT IN ('paid','refunded')`).
-
-### Where the patch comes from, and how well each does
-
-Three interchangeable providers, because the probes — not the model — decide
-whether a patch worked.
-
-| Provider | Needs | Measured on the same 5-finding repair |
-|---|---|---|
-| `claude` | Claude Code CLI on PATH | **5 findings → 0**, one round. Runs on an existing subscription, no API credits. |
-| `ollama` | ollama + a local model | `qwen2.5-coder:7b`: **5 → 3**, then plateaued. Fully offline. |
-| `api` | `ANTHROPIC_API_KEY` with credit | direct Anthropic API |
-
-A local 7B does real work here and does not finish the job. Both failing runs
-restored the original file and exited non-zero — no false success.
-
-Local models are asked for **one edit at a time**, as a search/replace block
-applied deterministically here, not a whole-file rewrite. Asking a 3B for the
-complete file was measured failing three rounds running: it returned the source
-almost unchanged, because reproducing 120 lines without drifting is a different
-skill from seeing the bug.
-
-Model choice counts free RAM **and** GPU VRAM, and prefers a model ollama already
-holds resident. Pin one with `RAZE_PROVIDER`.
+`.claude/agents/raze.md` is an agent definition consumed by Claude Code, not
+documentation — it is the file that makes `raze` available as an agent.

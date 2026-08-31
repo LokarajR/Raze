@@ -36,7 +36,7 @@
 const MIN_SAMPLES = Number(process.env.RAZE_MIN_SAMPLES || 20);
 
 /**
- * The measured baseline, from measurement/RESULTS.md. Observations are compared
+ * The measured baseline, from the research section of README.md. Observations are compared
  * against it so a merchant can see when their account behaves differently from
  * what the study found.
  */

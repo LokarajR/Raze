@@ -14,7 +14,7 @@
  * shipping, WhatsApp) are outside that boundary — those go through the outbox,
  * which is at-least-once with idempotent delivery.
  *
- * Proven against five measured failure modes; see measurement/RESULTS.md for the
+ * Proven against five measured failure modes; see the research section of README.md for the
  * 796-delivery study the timing constants come from.
  */
 
